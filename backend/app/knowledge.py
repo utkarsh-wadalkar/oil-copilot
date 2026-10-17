@@ -180,13 +180,25 @@ class AssetKnowledge:
         self._user_records={r.record_id:r for r in self._records('user')}
         self.wells=list(self.session.scalars(self._well_stmt(q))); self.well_ids=[w.id for w in self.wells]
         if q.well_ids and set(q.well_ids)-set(self.well_ids): self.warnings.append('Some requested wells are unknown or outside the requested area')
-        handlers={'status':self._status,'temperatures':self._temperatures,'spills':self._spills,'downtime':self._downtime,'maintenance':self._maintenance,'rca':self._rca,'containment':self._containment,'compliance':self._compliance,'notes':self._note_rows,'documents':self._documents,'guidance':self._guidance}
+        handlers={'status':self._status,'temperatures':self._temperatures,'spills':self._spills,'downtime':self._downtime,'maintenance':self._maintenance,'rca':self._rca,'containment':self._containment,'compliance':self._compliance,'notes':self._note_rows,'documents':self._documents,'guidance':self._guidance,
+            'gas_response':lambda q:fieldops.gas_response(self,q),'bypasses':lambda q:fieldops.bypasses(self,q),
+            'regulator_letter':lambda q:fieldops.regulator_letter(self,q),'status_conflicts':lambda q:fieldops.status_conflicts(self,q),
+            'recall_pumps':lambda q:fieldops.recall_pumps(self,q),'cold_weather':lambda q:fieldops.cold_weather(self,q),
+            'waiting_reasons':lambda q:fieldops.waiting_reasons(self,q),'hot_regions':lambda q:fieldops.hot_regions(self,q),
+            'operator_signals':lambda q:fieldops.operator_signals(self,q),'pressure':lambda q:fieldops.pressure(self,q),
+            'production_rank':lambda q:fieldops.production_rank(self,q)}
         rows=handlers[q.operation.value](q)
         if q.limit: rows=rows[:q.limit]
         selected=list(dict.fromkeys(r['well_id'] for r in rows if r.get('well_id')))
         if not selected and q.operation in {Operation.documents,Operation.guidance}: selected=self.well_ids if q.well_ids else []
-        default='card' if q.operation==Operation.status and len(rows)==1 else 'line' if q.operation==Operation.temperatures else 'bar' if q.operation==Operation.downtime and len(rows)>1 else 'text' if q.operation==Operation.downtime else 'table'
-        visual=VisualSpec(kind=q.visual or default,title=q.operation.value,data=rows,x='date' if q.operation==Operation.temperatures else None,y='wellhead_temp_c' if q.operation==Operation.temperatures else None)
+        default='card' if q.operation==Operation.status and len(rows)==1 else 'line' if q.operation==Operation.temperatures else 'bar' if q.operation in {Operation.downtime,Operation.hot_regions,Operation.waiting_reasons} and len(rows)>1 else 'text' if q.operation in {Operation.downtime,Operation.pressure,Operation.production_rank} else 'table'
+        x=None; y=None; series=None
+        if q.operation==Operation.temperatures: x='date'; y='wellhead_temp_c'
+        elif q.operation==Operation.waiting_reasons: x='area'; y='jobs'; series='reason'
+        elif q.operation==Operation.hot_regions: x='area'; y='mean_delta_c'
+        elif q.operation==Operation.operator_signals: x='well_id'; y='score'
+        elif q.operation==Operation.bypasses: x='well_id'
+        visual=VisualSpec(kind=q.visual or default,title=q.operation.value,data=rows,x=x,y=y,series=series)
         summary=f'{len(rows)} {q.operation.value} result(s).'
         if not rows: summary='No matching records or applicable source evidence.'
         return AnswerEnvelope(result_id=new_id(),question=q.query or q.operation.value,analysis_date=self.analysis_date,date_window={'start':q.start,'end':q.end or self.analysis_date} if q.start else None,summary=summary,findings=[Finding(label=q.operation.value,value=rows,evidence_ids=list(self.evidence))],evidence=list(self.evidence.values()),conflicts=self.conflicts,visual=visual,selected_well_ids=selected,calculations=self.calculations,revisions={s.id:s.revision for s in self.session.scalars(select(SourceVersion).where(SourceVersion.id.in_({r.source_id for r in self.evidence.values()})))},warnings=self.warnings)

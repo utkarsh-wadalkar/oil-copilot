@@ -1707,3 +1707,9 @@ a {
   background: var(--surface-sunken);
 }
 .cell-empty { color: var(--ink-muted); opacity: 0.55; }
+.chart__stack--0 { fill: var(--rust); }
+.chart__stack--1 { fill: var(--ink); }
+.chart__stack--2 { fill: var(--ok-ink); }
+.chart__stack--3 { fill: var(--warn-ink); }
+.chart__stack--4 { fill: var(--ink-muted-strong); }
+.chart__swatch--4 { background: var(--ink-muted-strong); }

@@ -1,5 +1,7 @@
 # Page 1 — System design
 
+[![Architecture diagram of utkarsh-wadalkar/oil-copilot](https://gitdiagram.com/utkarsh-wadalkar/oil-copilot/diagram.png)](https://gitdiagram.com/utkarsh-wadalkar/oil-copilot?utm_source=readme&utm_medium=picture)
+
 **Thesis:** the model decides *what to ask*, never *what is true*. Every number, id, date and
 citation comes from deterministic code over versioned records; the model only picks tools and
 frames prose.

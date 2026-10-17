@@ -31,6 +31,8 @@ TOOL_SCHEMAS = [
             'operation': {'type': 'string', 'enum': [op.value for op in Operation]},
             'well_ids': {'type': 'array', 'items': {'type': 'string'}},
             'area': {'type': 'string'},
+            'areas': {'type': 'array', 'items': {'type': 'string'},
+                      'description': 'Several area names at once, e.g. a letter that covers two blocks.'},
             'start': {'type': 'string', 'description': 'ISO date'},
             'end': {'type': 'string', 'description': 'ISO date'},
             'equipment_kind': {'type': 'string'},
@@ -84,7 +86,17 @@ SYSTEM_PROMPT = (
     'A "real spill" is a detection that survives corrections (the default); reportable_only is only for '
     'questions about reporting, regulators, fines or SOP thresholds. "Last N weeks" for temperatures means '
     'the last N weekly readings, not N*7 calendar days from today. Ask for one operation per tool call and '
-    'let the tool decide thresholds, windows and totals.'
+    'let the tool decide thresholds, windows and totals. '
+    'If the data cannot answer the question (for example no pressure or no produced volume measurement), say '
+    'so plainly and name the missing field; never substitute a different quantity as if it were the answer. '
+    'Operation routing for the operational questions: gas/gas smell/H2S report → gas_response; temporary '
+    'flowline bypass or MOC approval → bypasses; regulator letter, soil samples or clean-up compliance → '
+    'regulator_letter with every area the letter names; inspection vs operator note disagreeing about '
+    'production → status_conflicts; recalled pump or pump swapped → recall_pumps; heat trace / cold weather '
+    'check → cold_weather; waiting on parts, crews, contractors or weather → waiting_reasons; hottest region → '
+    'hot_regions; notes saying a well sounds or behaves wrong → operator_signals; reservoir pressure → '
+    'pressure; most oil produced → production_rank. Use the operation that matches the question instead of a '
+    'generic notes or documents lookup.'
 )
 
 

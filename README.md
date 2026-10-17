@@ -35,6 +35,10 @@ present the result. The model can never invent a figure, a well, a citation or a
 
 ## Architecture
 
+[![Architecture diagram of utkarsh-wadalkar/oil-copilot](https://gitdiagram.com/utkarsh-wadalkar/oil-copilot/diagram.png)](https://gitdiagram.com/utkarsh-wadalkar/oil-copilot?utm_source=readme&utm_medium=picture)
+
+The generated map of this repository (modules and their imports) is above; the runtime shape is below.
+
 ```
                     ┌────────────────────────── Next.js workspace ──────────────────────────┐
  user picker ─────► │ chat · answer parts · visual · evidence drawer · correction preview   │
@@ -124,6 +128,27 @@ $env:DATASET_ROOT="assets/flytbase-dataset/sample-data"
 .venv\Scripts\python -m uvicorn app.main:app --app-dir backend --port 8000
 cd frontend; npm install; npm run dev
 ```
+
+
+## Loading the released test dataset
+
+The test dataset (600 wells, today = 2027-01-15) loads through the same versioned path as the
+sample. Importing it alongside the sample keeps every source, creates new versions for the 200
+shared wells and adds the 400 new ones:
+
+`powershell
+python tools/evalrun/load_test.py --source assets/flytbase-dataset/test-data/dataset
+`
+
+Set ANALYSIS_DATE=2027-01-15 in .env first. The loader also projects the new batch into Neo4j
+(Well, Rule, SourceVersion and their edges) and prints the projected count, so the graph
+reflects the new data, not only PostgreSQL.
+
+`powershell
+# run the released questions through the copilot (threaded, with draft confirmation)
+python tools/evalrun/final.py --base-url http://127.0.0.1:8000 \
+  --turns eval-runs/final-turns.json --out eval-runs/final
+`
 
 ## Evaluation harness
 

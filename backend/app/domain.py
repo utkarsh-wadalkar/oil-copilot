@@ -16,6 +16,10 @@ class Operation(str, Enum):
     status='status'; temperatures='temperatures'; spills='spills'; downtime='downtime'
     maintenance='maintenance'; compliance='compliance'; containment='containment'
     rca='rca'; notes='notes'; documents='documents'; guidance='guidance'
+    gas_response='gas_response'; bypasses='bypasses'; regulator_letter='regulator_letter'
+    status_conflicts='status_conflicts'; recall_pumps='recall_pumps'; cold_weather='cold_weather'
+    waiting_reasons='waiting_reasons'; hot_regions='hot_regions'; operator_signals='operator_signals'
+    pressure='pressure'; production_rank='production_rank'
 
 
 class QuerySpec(BaseModel):
@@ -30,6 +34,7 @@ class QuerySpec(BaseModel):
     producing: bool | None = None
     reportable_only: bool = False
     query: str | None = None
+    areas: list[str] | None = None
     visual: VisualKind | None = None
 
     @model_validator(mode='after')

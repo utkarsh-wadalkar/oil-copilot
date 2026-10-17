@@ -429,6 +429,89 @@ function BarView({
   const nameKey = labelKey(rows, [visual.x ?? "well_id", "well", "name", "area"], ["evidence_ids", valueKey ?? ""]);
   if (!valueKey || !nameKey) return <MissingField visual={visual} field={valueKey ? "a label" : "a value"} />;
 
+  // A series column turns the bar into a stacked bar: one bar per label, one segment per
+  // series value, lengths still exactly the numbers the backend sent.
+  const seriesKey =
+    visual.series && rows.some((row) => typeof row[visual.series as string] === "string") ? visual.series : null;
+
+  if (seriesKey) {
+    const names = Array.from(new Set(rows.map((row) => LABEL(row[nameKey]))));
+    const seriesValues = Array.from(new Set(rows.map((row) => LABEL(row[seriesKey])))).sort();
+    const byKey = new Map<string, number>();
+    for (const row of rows) byKey.set(`${LABEL(row[nameKey])}|${LABEL(row[seriesKey])}`, NUMBER(row[valueKey]) ?? 0);
+    const totals = names.map((name) => seriesValues.reduce((sum, s) => sum + (byKey.get(`${name}|${s}`) ?? 0), 0));
+    const ticks = niceTicks(0, Math.max(...totals, 1));
+    const high = Math.max(...ticks);
+    const barH = Math.max(12, Math.min(30, PLOT_H / Math.max(names.length, 1) - 10));
+    const gap = names.length > 1 ? (PLOT_H - barH * names.length) / (names.length - 1) : 0;
+    const chartH = Math.max(H, names.length * (barH + gap) + PAD.top + PAD.bottom);
+    return (
+      <div>
+        <VisualHeading visual={visual} />
+        <div className="chart">
+          <svg viewBox={`0 0 ${W} ${chartH}`} role="img" aria-label={`${visual.title}, stacked by ${seriesKey}`}>
+            {ticks.map((tick) => {
+              const x = PAD.left + (tick / (high || 1)) * PLOT_W;
+              return (
+                <g key={tick}>
+                  <line x1={x} x2={x} y1={PAD.top} y2={PAD.top + names.length * (barH + (gap || 0))} className="chart__grid" />
+                  <text x={x} y={PAD.top + names.length * (barH + (gap || 0)) + 16} className="chart__tick" textAnchor="middle">
+                    {tick}
+                  </text>
+                </g>
+              );
+            })}
+            {names.map((name, index) => {
+              const y = PAD.top + index * (barH + gap);
+              let offset = 0;
+              return (
+                <g key={name}>
+                  {seriesValues.map((series, seriesIndex) => {
+                    const value = byKey.get(`${name}|${series}`) ?? 0;
+                    if (value <= 0) return null;
+                    const width = (value / (high || 1)) * PLOT_W;
+                    const x = PAD.left + offset;
+                    offset += width;
+                    return (
+                      <rect
+                        key={series}
+                        x={x}
+                        y={y}
+                        width={Math.max(width, 1)}
+                        height={barH}
+                        className={`chart__stack chart__stack--${seriesIndex % 5}`}
+                      >
+                        <title>{`${name} · ${series} · ${value}`}</title>
+                      </rect>
+                    );
+                  })}
+                  <text x={PAD.left - 8} y={y + barH / 2 + 4} className="chart__tick chart__tick--y" textAnchor="end">
+                    {name}
+                  </text>
+                  <text x={PAD.left + offset + 6} y={y + barH / 2 + 4} className="chart__value">
+                    {formatScalar(totals[index])}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+          <ul className="chart__legend">
+            {seriesValues.map((series, index) => (
+              <li key={series}>
+                <span className={`chart__swatch chart__swatch--${index % 5}`} aria-hidden="true" />
+                {series}
+              </li>
+            ))}
+          </ul>
+          <p className="visual__note">
+            Stacked by <code>{seriesKey}</code>; segment and total lengths are the returned <code>{valueKey}</code> values.
+          </p>
+        </div>
+        <RowEvidence rows={rows} envelope={envelope} onOpenEvidence={onOpenEvidence} />
+      </div>
+    );
+  }
+
   const values = rows.map((row) => NUMBER(row[valueKey]) ?? 0);
   const max = Math.max(...values);
   const ticks = niceTicks(0, max === 0 ? 1 : max);

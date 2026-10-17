@@ -333,6 +333,30 @@ def ingest_dataset(session, root: Path, revision=None, no_embeddings=False):
                         if match: hours=float(match.group(1))
                         elif p.get('triggered_by_inspection_id'): extraction_warnings.append(f'{report_path}: containment time not extracted; retained as unknown')
                         facts={'maintenance_id':ident,'asset_id':p['asset_id'],'inspection_id':p.get('triggered_by_inspection_id'),'containment_hours':hours,'compliance':[]}
+                        text=plain(files[report_path])
+                        # Facts that exist only in prose. Each stays tied to this report's source.
+                        parts=re.search(r'Parts installed:?\s*(.+)',text)
+                        if parts:
+                            line=parts.group(1)
+                            facts['parts_text']=line.strip()
+                            facts['pump_model']=(re.search(r'(Highline\s+RP-\d+|ESP-\d+|[\w-]+\s+RP-\d+)',line,re.I).group(1) if re.search(r'(Highline\s+RP-\d+|ESP-\d+|[\w-]+\s+RP-\d+)',line,re.I) else None)
+                            lot=re.search(r'lot\s+(LOT-[\w-]+)',line,re.I); facts['part_lot']=lot.group(1).upper() if lot else None
+                            serial=re.search(r'serial\s+(SN-[\w-]+)',line,re.I); facts['part_serial']=serial.group(1) if serial else None
+                        wait=re.search(r'waited about (\d+) days? for (?:it|the [^.]+|a [^.]+|parts|crews?|contractors?)',text,re.I)
+                        if wait:
+                            facts['wait_days']=int(wait.group(1))
+                            window=text[max(0,wait.start()-160):wait.end()+120].lower()
+                            if re.search(r'rig|workover',window): facts['wait_reason']='workover rig'
+                            elif re.search(r'parts|valve|pump|back-order|back order',window): facts['wait_reason']='parts'
+                            elif re.search(r'contractor|third party|vendor',window): facts['wait_reason']='contractor'
+                            elif re.search(r'crew|staff|hands|roster',window): facts['wait_reason']='crews'
+                            elif re.search(r'weather|freeze|ice|storm|wind',window): facts['wait_reason']='weather'
+                            else: facts['wait_reason']='other'
+                        h2s=re.search(r'highest reading (\d+(?:\.\d+)?) ppm',text,re.I)
+                        if h2s: facts['h2s_ppm']=float(h2s.group(1))
+                        facts['soil_samples_sent']=bool(re.search(r'Soil samples sent to the lab',text,re.I))
+                        facts['root_cause']=(re.search(r'## Root cause\s*\n+(.+)',text).group(1).strip() if re.search(r'## Root cause\s*\n+(.+)',text) else None)
+                        facts['interim']=bool(re.search(r'interim report',text,re.I))
                         for n,l in enumerate(files[report_path].splitlines(),1):
                             cells=[plain(c) for c in l.strip().strip('|').split('|')]
                             if len(cells)>=3 and re.fullmatch(r'(SR|WS|RC)-\d+',cells[0]): facts['compliance'].append({'protocol':cells[0],'result':cells[1],'detail':cells[2],'line':n})
@@ -342,7 +366,13 @@ def ingest_dataset(session, root: Path, revision=None, no_embeddings=False):
                         if previous_fact is None:
                             fact=RecordVersion(id=new_id(),kind='report_fact',record_id=factid,asset_id=p['asset_id'],payload=facts,source_id=report.source_id,line_number=1,batch_id=batch.id)
                             session.add(fact); facts_pending.append(fact)
-                        else: facts_pending.append(previous_fact)
+                        else:
+                            # A derived projection may improve without a new source file (new
+                            # extraction rules). Refresh its payload in place; the immutable
+                            # report source and its version are untouched.
+                            if previous_fact.payload!=facts:
+                                previous_fact.payload=facts; changed_sources.add(report.source_id)
+                            facts_pending.append(previous_fact)
                     maintenance_rows.append(dict(id=ident,version_id=r.id,well_id=p['asset_id'],started_at=timestamp(p['started_at']),completed_at=timestamp(p['completed_at']) if p.get('completed_at') else None,maintenance_type=p['maintenance_type'],equipment_kind=p['equipment_kind'],inspection_id=p.get('triggered_by_inspection_id'),cost_usd=p['cost_usd']['total'],containment_hours=hours,report_version_id=report_version))
                 elif kind=='regulator':
                     regulator_rows.append(dict(id=ident,version_id=r.id,well_id=p['asset_id'],event_date=datetime.combine(date.fromisoformat(p['date']),datetime.min.time()),inspection_id=p.get('related_inspection_id'),event_type=p['event_type'],protocol_id=p.get('protocol_id'),status=p['status'],hours_to_report=p.get('hours_to_report'),fine_usd=p.get('fine_usd',0)))

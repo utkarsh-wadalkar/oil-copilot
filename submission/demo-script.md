@@ -1,89 +1,128 @@
-# Demo video script — 5:00 hard cap
+# Demo video — 5:00 (2:00 system, 3:00 one scenario end to end)
 
-Record 1440p or 1080p, browser at 100% zoom, one window. Cut dead air: the answer latency is
-4–6 s, so keep talking over it or trim. Speak in your own voice; the beats below are a spine,
-not a script to read.
+Record at 1080p, browser at 100% zoom, one window, no terminal unless you need it. Speak in your
+own voice; the text below is a spine, not a script to read. Numbers in **bold** are the ones to say
+exactly.
 
-## 0:00–0:35 — The problem and the thesis
+Before recording: `docker compose up -d` (or the local uvicorn), `ANALYSIS_DATE=2027-01-15`, test
+dataset loaded, `/health` ok, `/capabilities` shows the model configured. Clear the thread sidebar
+or pick your demo user fresh so old threads don't distract.
 
-> "An operator asks which wells were down longest this summer, and why. The answer lives in
-> inspections, repairs, SOPs and people's notes. The obvious build is 'put it all in a prompt'.
-> I did the opposite: **the model chooses what to ask, never what is true**. Every number comes
-> from typed SQL over versioned records; the model's job is tool choice and framing."
+---
 
-Show the workspace with the user picker visible.
+## 0:00–0:20 — What this is
 
-## 0:35–1:30 — How it is built
+[Show the workspace, user picker visible.]
 
-> "Data lands as immutable source versions — file hash, path — and one record version per JSONL
-> line with its line number. An active pointer decides what is current, so a re-import never
-> rewrites history. Above that sit typed projections for analytics, and a rules table extracted
-> from the manuals: the T200 production delta, the 5-barrel reportable limit, the 24-hour
-> notice. Those are data with a cited line, not constants in code."
+> "This is the Asset Intelligence Copilot. An operator asks a question in plain English about
+> wells — status, spills, repairs, compliance — and gets an answer with the records and the rule
+> text it used, drawn as the right visual. My governing decision: **the model chooses what to ask,
+> never what is true.**"
 
-Gesture at the architecture in the README (or a slide): three tools — asset_query,
-recall_results, propose_feedback.
+## 0:20–1:05 — How it is built
 
-> "Three tools. Query is typed and returns rows plus the evidence ids. Recall is scoped to the
-> asking user. Feedback can only *prepare* a change; a human confirms it."
+[Show the architecture diagram from the README, or a slide of it.]
 
-## 1:30–3:15 — Real use case A: compliance, end to end
+> "Data lands as immutable source versions — file hash and path — and one record version per JSONL
+> line with its line number. An active pointer decides what is current, so re-importing the test
+> dataset created new versions for the shared wells and never rewrote history. Above that sit typed
+> projections for analytics, a rules table extracted from the manuals and SOPs with the exact line
+> they came from, and a graph projection in Neo4j for lineage and recall."
 
-Ask as **Michael Turner**:
+> "Three tools. `asset_query` is typed — the model cannot write SQL, it picks an operation and a
+> window, and the code decides thresholds and totals. `recall_results` is scoped to the asking user.
+> `propose_feedback` can only prepare a change; a human confirms it."
 
-> "Which rules has WELL-0001 broken in the last 12 months, and what is still open?"
+## 1:05–1:35 — Why the split
 
-Walk the render while it lands:
+> "Every number is SQL over the *effective* value of a record — after corrections. The production
+> threshold comes from the well-type manual: T200, T350 and T500 each have their own. Downtime is
+> seven days per non-producing weekly inspection, not repair hours. A spill total or a heatmap cell
+> is an aggregate, never a vector search. If the data cannot answer something, it says which field
+> is missing instead of substituting a different quantity."
 
-- table of breaches; point at SR-01's 41 hours against the 24-hour limit, SR-02's 7-hour
-  containment against 4, SR-03 and RC-04 deadlines.
-- open the evidence drawer on one row; show the exact SOP line and the regulator record.
+## 1:35–2:00 — Evidence and memory
 
-> "Two of these are only provable from prose: the containment time exists only inside the
-> repair report, and the RC-04 response is absent — so the answer says absent, it does not
-> invent a response. The SOP text is a citation, not something the model paraphrased."
+> "Every row carries evidence ids that resolve to an exact source line — a JSONL line, a report
+> line, an SOP section. Two memory levels: shared knowledge — corrections, claims, team rules with
+> an explicit scope — and private conversation history, re-validated against the asking user on
+> every read. A reference this user never made returns 'no earlier conversation of yours', never
+> someone else's."
 
-## 3:15–4:10 — Real use case B: a correction that must not silently win
+---
 
-Ask as **Michael Turner**:
+## 2:00–5:00 — One scenario, end to end
 
-> "The AI estimated the 24 Sep spill at WELL-0151 as 4.5 barrels. The field crew measured 5.4."
+[Pick the user in the header. Ask exactly as written. Talk over the 3–6 s latency.]
 
-- the reply is a **draft**, with before → after and the reason.
-- confirm it.
-- ask as **Laura Simmons**: "Which spills in Northeast Block 8 in the last 90 days needed a
-  report to the regulator?"
+### 2:00 — The question
 
-> "Notice what changed: 5.4 crosses the 5-barrel reportable threshold, so the answer now names
-> WELL-0151 and flags that no written notice is on record. The original 4.5 estimate is still
-> there, with who changed it and why. Laura never saw Michael's chat — she saw the shared record."
+As **Laura Simmons (HSE)**:
 
-## 4:10–4:50 — The private memory line
+> "Since 1 Nov 2026, every time an operator note reports gas at a well, did we get someone out to
+> that well in time under our operating procedures? List every report and whether the response met
+> the deadline."
 
-Ask as **Jessica Reed**:
+### 2:20 — What came back
 
-> "For the three wells we discussed yesterday, what have repairs cost this year?"
+[Point at the table.]
 
-> "Jessica has no such conversation, so the answer refuses instead of borrowing Michael's
-> history. That refusal is a design decision: an unresolved reference must never widen into a
-> fleet-wide query."
+> "One row per gas report: the well, the area, when the note was written, the response — a
+> maintenance job or a **manual** inspection, because the SOP says a drone inspection does not
+> count — the hours to response, the deadline, and Met or Missed."
 
-Then as **Michael Turner**, ask the same and show it resolve to the three wells he actually
-discussed, with per-well repair cost and citations.
+> "The deadline is not a constant. The operations SOP revision 2 cuts it from **24 hours to 12**
+> for reports from 1 January 2027, so the rows before that date are judged against 24 and the ones
+> after against 12. The rule is a row in the database with a source line, not a number in my code."
 
-## 4:50–5:00 — Limits and next
+### 2:50 — Evidence
 
-> "What I would fix next: exercise every final question through the model path, not just the
-> deterministic planner, and replace heuristic routing with a schema-constrained decoder.
-> The graph and Mem0 projections are optional — Postgres is the source of truth — and the nao
-> analytics sidecar is not on the default path. Everything I showed is traceable to a line of
-> source."
+[Open the evidence drawer on one missed row.]
 
-## Pre-flight
+> "Here is the operator's note, the job that responded, and the SOP section that sets the deadline
+> — three different sources, one answer."
 
-1. `docker compose up -d` and wait for backend `/health`.
-2. Load the dataset; confirm `/capabilities` shows the model configured.
-3. Two browsers tabs: app, and `answers.md` for the question list (do not show expected answers
-   on camera).
-4. Clear the thread sidebar so no stale rows distract.
-5. Rehearse the correction once on a scratch well if the demo data is shared.
+### 3:10 — The judgement
+
+> "This is the part a chat model usually gets wrong: it is a join between unstructured text, a
+> structured job table and a document rule, with a date-dependent threshold. The answer states the
+> count and names the misses rather than saying 'all handled'."
+
+### 3:40 — Same session, follow-up
+
+> "An operator reported a gas smell at WELL-0332 on 3 Dec. What was the H2S reading?"
+
+> "The reading exists only inside the repair report's safety section. It is extracted at ingest with
+> its line provenance, so the copilot can answer it and cite it — it isn't summarised from a pile of
+> PDFs at question time."
+
+### 4:10 — Private vs shared
+
+[Switch user in the header to **Nathan Pierce**.]
+
+> "A different user gets a clean workspace. Ask him 'the wells we discussed yesterday' and he gets a
+> refusal, not Laura's history. Now a shared statement — Nathan says a recalled pump was swapped —
+> is prepared as a draft, and after he confirms it, Robert sees it. Shared facts travel, private
+> conversation does not."
+
+### 4:40 — Honest limits
+
+> "Two of the eleven questions ask for quantities the dataset does not contain: reservoir pressure
+> and produced barrels. The copilot says so and names the missing field instead of inventing a
+> proxy. Where a question needs a judgement — which well to fix first — it gives a transparent
+> ranked heuristic and labels it as one."
+
+### 4:55 — Close
+
+> "Built with FastAPI, PostgreSQL with pgvector, Neo4j for projection and lineage, and gemma4:31b
+> for tool choice. The deterministic planner is the reproducible path; the model is the general one.
+> Everything on screen traces back to a line of source."
+
+---
+
+## If the gas question misbehaves on the day
+
+Swap the 2:00–3:40 block for **Q11** (one turn: "Which region of the field consistently runs
+hotter?") and then **Q6** (status disagreements). Q11 is the safest visual demo; Q6 shows the
+conflict handling. Keep the evidence-drawer beat and the user-switch beat — those are the parts
+that prove the design.
