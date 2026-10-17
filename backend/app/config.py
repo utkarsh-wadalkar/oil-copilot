@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,10 +21,11 @@ class Settings(BaseSettings):
     ollama_model: str = "gemma4:31b"
     embeddings_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    # Generative UI (OpenUI Lang). OUI-1 is served through any OpenAI-compatible endpoint
-    # (vLLM serving thesysdev/OUI-1, or OpenUI Gateway). The model chooses composition only:
-    # every value comes from the validated envelope, never from the model.
+    # Generative UI (OpenUI Lang), via Gateway or the existing Ollama account.
+    # The model chooses composition only; values come from the validated envelope.
     openui_enabled: bool = False
+    # Ollama reuses the existing OLLAMA_* settings; no second credential is needed.
+    openui_provider: Literal['gateway', 'ollama'] = 'gateway'
     openui_base_url: str = "http://localhost:8080/v1"
     openui_model: str = "thesysdev/OUI-1"
     openui_api_key: str = "local"

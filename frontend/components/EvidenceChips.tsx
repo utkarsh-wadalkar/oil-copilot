@@ -1,6 +1,7 @@
 "use client";
 
 import { Quotes } from "@phosphor-icons/react";
+import { useState } from "react";
 
 import type { AnswerEnvelope } from "@/lib/contracts";
 
@@ -23,11 +24,14 @@ export function EvidenceChips({
   envelope: AnswerEnvelope;
   onOpen: ((evidenceId: string) => void) | null;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const uniqueIds = [...new Set(ids)];
+  const visibleIds = expanded ? uniqueIds : uniqueIds.slice(0, 6);
   if (ids.length === 0) return null;
 
   return (
     <span className="chips">
-      {ids.map((id) => {
+      {visibleIds.map((id) => {
         const index = envelope.evidence.findIndex((ref) => ref.id === id);
         const ref = index >= 0 ? envelope.evidence[index] : null;
         const label = ref ? `E${index + 1}` : id;
@@ -49,6 +53,11 @@ export function EvidenceChips({
           </button>
         );
       })}
+      {uniqueIds.length > 6 ? (
+        <button type="button" className="chip" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Show fewer" : `+${uniqueIds.length - 6} sources`}
+        </button>
+      ) : null}
     </span>
   );
 }

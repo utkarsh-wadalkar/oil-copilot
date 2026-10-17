@@ -4,9 +4,9 @@ Two models, two jobs, and the boundary between them is the point:
 
 * the **copilot model** (``OLLAMA_MODEL``, gemma4:31b) talks to the engineer and owns the
   facts. Everything it says is recomputed and validated into an :class:`AnswerEnvelope`;
-* the **UI model** (``OPENUI_MODEL``, ``thesysdev/OUI-1`` served through any
-  OpenAI-compatible endpoint) only decides *presentation*: which parts of that envelope to
-  lead with, in what order, and what short annotation to add.
+* the **UI model** (``OPENUI_MODEL`` through Gateway, or ``OLLAMA_MODEL`` when
+  ``OPENUI_PROVIDER=ollama``) only decides *presentation*: which parts of that envelope
+  to lead with, in what order, and what short annotation to add.
 
 The UI model therefore has no authority over a value. A program may call ``Layout``,
 ``Answer``, ``AnswerPart`` and ``Note`` and nothing else, every ``resultId`` in it must be
@@ -85,6 +85,36 @@ def system_message(spec: dict) -> str:
     return ']]>openui:config\n' + json.dumps({'chatLibrary': chat_library}) + '\n\n' + _INSTRUCTIONS
 
 
+def direct_system_message(spec: dict) -> str:
+    """Teach a direct model the library instead of sending Gateway-only metadata.
+
+    This library uses only component calls and literals. Mirror that subset of
+    lang-core's generateSystemPrompt: syntax rules plus the generated signatures.
+    """
+    signatures = '\n'.join(
+        f"{component['signature']} — {component.get('description', '')}"
+        for component in spec['components'].values()
+    )
+    return (
+        'You respond using OpenUI Lang, a declarative UI language. '
+        'Return only OpenUI Lang code, without markdown or explanations.\n\n'
+        '## Syntax Rules\n'
+        'Each statement is on its own line: identifier = Expression.\n'
+        f'The entry point is root = {spec["root"]}(...).\n'
+        'Expressions are double-quoted strings, numbers, booleans, null, arrays, objects, '
+        'or component calls TypeName(arg1, arg2, ...).\n'
+        'Arguments are POSITIONAL (order matters, not names). Never use named arguments or JSX.\n'
+        'Strings use double quotes with backslash escaping.\n'
+        'Use inline component calls inside the root children array; no other statements are needed.\n\n'
+        '## Available Components\n' + signatures + '\n\n'
+        '## Example\n'
+        'root = Layout([AnswerPart("result-id", "summary"), AnswerPart("result-id", "visual")])\n'
+        'Replace result-id with the supplied result_id. Layout takes exactly ONE argument: '
+        'an ARRAY of children enclosed in square brackets. Do not pass children as separate arguments.\n\n'
+        + _INSTRUCTIONS
+    )
+
+
 def user_message(envelope: dict, result_id: str) -> str:
     """Describe the answer's shape, not its values, so the model can choose sections."""
     visual = envelope.get('visual') or {}
@@ -131,9 +161,17 @@ def guard(program: str, result_id: str) -> str:
 
 def _post(settings: Settings, payload: dict) -> str:
     """One Chat Completions call. Separated so tests never touch the network."""
+    if settings.openui_provider == 'ollama':
+        base_url = settings.ollama_base_url.rstrip('/')
+        if not base_url.endswith('/v1'):
+            base_url += '/v1'
+        api_key = settings.ollama_api_key
+    else:
+        base_url = settings.openui_base_url.rstrip('/')
+        api_key = settings.openui_api_key
     response = httpx.post(
-        f'{settings.openui_base_url.rstrip("/")}/chat/completions',
-        headers={'Authorization': f'Bearer {settings.openui_api_key}'} if settings.openui_api_key else {},
+        f'{base_url}/chat/completions',
+        headers={'Authorization': f'Bearer {api_key}'} if api_key else {},
         json=payload,
         timeout=settings.openui_timeout_seconds,
     )
@@ -148,25 +186,29 @@ def compose(envelope: dict, result_id: str, settings: Settings) -> UiProgram:
         return UiProgram(enabled=False, reason=(
             'Generative UI is off. Set OPENUI_ENABLED=1 and point OPENUI_BASE_URL at a server that '
             'writes OpenUI Lang (vLLM serving thesysdev/OUI-1, or OpenUI Gateway).'))
+    ollama = settings.openui_provider == 'ollama'
+    model = settings.ollama_model if ollama else settings.openui_model
+    if ollama and not settings.ollama_api_key:
+        return UiProgram(enabled=True, model=model, reason='OLLAMA_API_KEY is not configured.')
     try:
         spec = load_spec(settings)
     except UiUnavailable as exc:
         return UiProgram(enabled=False, reason=str(exc))
     payload = {
-        'model': settings.openui_model,
+        'model': model,
         'temperature': 0,
         'messages': [
-            {'role': 'system', 'content': system_message(spec)},
+            {'role': 'system', 'content': direct_system_message(spec) if ollama else system_message(spec)},
             {'role': 'user', 'content': user_message(envelope, result_id)},
         ],
     }
     try:
         raw = _post(settings, payload)
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-        return UiProgram(enabled=True, model=settings.openui_model,
+        return UiProgram(enabled=True, model=model,
                          reason=f'UI model unavailable: {type(exc).__name__}')
     try:
         program = guard(raw, result_id)
     except UiRejected as exc:
-        return UiProgram(enabled=True, model=settings.openui_model, reason=f'rejected: {exc}')
-    return UiProgram(enabled=True, model=settings.openui_model, program=program)
+        return UiProgram(enabled=True, model=model, reason=f'rejected: {exc}')
+    return UiProgram(enabled=True, model=model, program=program)

@@ -17,6 +17,7 @@ RESULT = '11111111-2222-3333-4444-555555555555'
 
 def settings(**overrides):
     return get_settings().model_copy(update={'openui_enabled': True,
+                                             'openui_provider': 'gateway',
                                              'openui_spec_path': str(SPEC), **overrides})
 
 
@@ -110,3 +111,52 @@ def test_compose_falls_back_when_the_model_breaks_the_boundary(monkeypatch):
     result = ui_model.compose(ENVELOPE, RESULT, settings())
     assert result.program is None
     assert result.reason.startswith('rejected:')
+
+
+def test_ollama_composition_teaches_the_language_and_uses_the_ollama_model(monkeypatch):
+    def complete(config, payload):
+        assert payload['model'] == 'gemma4:31b'
+        prompt = payload['messages'][0]['content']
+        assert not prompt.startswith(']]>openui:config')
+        assert 'Arguments are POSITIONAL' in prompt
+        assert 'AnswerPart(resultId: string, part:' in prompt
+        assert 'root = Layout([AnswerPart(' in prompt
+        assert 'NEVER write a number' in prompt
+        assert RESULT in payload['messages'][1]['content']
+        return f'root = Layout([AnswerPart("{RESULT}", "summary")])'
+
+    monkeypatch.setattr(ui_model, '_post', complete)
+    result = ui_model.compose(ENVELOPE, RESULT, settings(openui_provider='ollama', ollama_model='gemma4:31b'))
+    assert result.model == 'gemma4:31b'
+    assert result.program == f'root = Layout([AnswerPart("{RESULT}", "summary")])'
+    assert result.reason is None
+
+
+@pytest.mark.parametrize('base_url', ['https://ollama.com/', 'https://ollama.com/v1/'])
+def test_ollama_request_uses_its_existing_credentials_and_cloud_endpoint(monkeypatch, base_url):
+    import httpx
+
+    def post(url, *, headers, json, timeout):
+        assert url == 'https://ollama.com/v1/chat/completions'
+        assert headers == {'Authorization': 'Bearer ollama-test-credential'}
+        assert json['model'] == 'gemma4:31b'
+        return httpx.Response(200, request=httpx.Request('POST', url), json={
+            'choices': [{'message': {'content': f'root = Layout([Answer("{RESULT}")])'}}],
+        })
+
+    monkeypatch.setattr(ui_model.httpx, 'post', post)
+    config = settings(openui_provider='ollama', ollama_model='gemma4:31b',
+                      ollama_base_url=base_url, ollama_api_key='ollama-test-credential',
+                      openui_api_key='gateway-test-credential')
+    result = ui_model.compose(ENVELOPE, RESULT, config)
+    assert result.program == f'root = Layout([Answer("{RESULT}")])'
+
+
+def test_ollama_without_a_key_does_not_make_an_unauthenticated_cloud_request(monkeypatch):
+    def unexpected(*args):
+        pytest.fail('A cloud request must not be sent without credentials')
+
+    monkeypatch.setattr(ui_model, '_post', unexpected)
+    result = ui_model.compose(ENVELOPE, RESULT, settings(openui_provider='ollama', ollama_api_key=''))
+    assert result.program is None
+    assert 'OLLAMA_API_KEY' in result.reason

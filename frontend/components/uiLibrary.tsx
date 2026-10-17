@@ -13,7 +13,7 @@
  * layout, so a model cannot build unbounded nesting.
  */
 import { createLibrary, defineComponent, useRenderNode } from "@openuidev/react-lang";
-import { useContext } from "react";
+import { Fragment, useContext } from "react";
 import { z } from "zod/v4";
 
 import { ANSWER_PARTS, type AnswerPart as AnswerPartName } from "@/lib/answerParts";
@@ -66,7 +66,11 @@ const Layout = defineComponent({
   }),
   component: ({ props }) => {
     const renderNode = useRenderNode();
-    return <div className="generative-layout">{props.children.map((child) => renderNode(child))}</div>;
+    return (
+      <div className="generative-layout">
+        {props.children.map((child, index) => <Fragment key={index}>{renderNode(child)}</Fragment>)}
+      </div>
+    );
   },
 });
 

@@ -150,6 +150,16 @@ python tools/evalrun/final.py --base-url http://127.0.0.1:8000 \
   --turns eval-runs/final-turns.json --out eval-runs/final
 `
 
+### Generate OpenUI layouts with Ollama Cloud
+
+Set `OPENUI_ENABLED=1` and `OPENUI_PROVIDER=ollama` in the root `.env`, then restart
+the backend. This reuses `OLLAMA_BASE_URL=https://ollama.com`, `OLLAMA_MODEL=gemma4:31b`
+and your existing server-side `OLLAMA_API_KEY`; no Thesys credits or second key are
+required. Gemma receives OpenUI syntax and the generated component signatures to
+compose layouts. OpenUI still renders validated answer values in the browser;
+Gateway's automatic repair is bypassed. Set `OPENUI_PROVIDER=gateway` to return to
+the existing `OPENUI_*` endpoint, model and credentials.
+
 ## Evaluation harness
 
 ```powershell

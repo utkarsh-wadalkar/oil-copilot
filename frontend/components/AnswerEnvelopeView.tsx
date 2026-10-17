@@ -38,10 +38,13 @@ export function AnswerEnvelopeView({
 
   return (
     <article className="answer">
+      {shown.summary ? <p className="answer__summary">{shown.summary}</p> : null}
+
       {has("meta") ? (
+      <>
       <div className="answer__meta">
         <span>
-          analysis date <span className="answer__meta-code">{envelope.analysis_date}</span>
+          As of <time dateTime={envelope.analysis_date}>{envelope.analysis_date}</time>
         </span>
         {window ? (
           <span>
@@ -51,18 +54,21 @@ export function AnswerEnvelopeView({
             </span>
           </span>
         ) : null}
-        <span>
-          result <span className="answer__meta-code">{envelope.result_id}</span>
-        </span>
         {envelope.selected_well_ids.length > 0 ? (
-          <span>
-            wells <span className="answer__meta-code">{envelope.selected_well_ids.join(", ")}</span>
-          </span>
+          <span>{envelope.selected_well_ids.length} well{envelope.selected_well_ids.length === 1 ? "" : "s"}</span>
         ) : null}
       </div>
+      <details className="answer__details">
+        <summary>Answer details</summary>
+        <div className="answer__details-body">
+          <p>Result <span className="answer__meta-code">{envelope.result_id}</span></p>
+          {envelope.selected_well_ids.length > 0 ? (
+            <p>Wells <span className="answer__meta-code">{envelope.selected_well_ids.join(", ")}</span></p>
+          ) : null}
+        </div>
+      </details>
+      </>
       ) : null}
-
-      {shown.summary ? <p className="answer__summary">{shown.summary}</p> : null}
 
       {shown.findings.length > 0 ? (
         <section className="section" aria-label="Findings">

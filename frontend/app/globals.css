@@ -542,6 +542,31 @@ a {
   color: var(--ink-muted-strong);
 }
 
+.answer__details {
+  font-size: 12px;
+  color: var(--ink-muted-strong);
+}
+
+.answer__details > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.answer__details-body {
+  margin-top: 8px;
+  padding: 12px;
+  max-height: 160px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+}
+
+.answer__details-body p + p {
+  margin-top: 8px;
+}
+
 .answer__summary {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1194,27 +1219,31 @@ a {
 :root {
   --ease-glide: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-press: cubic-bezier(0.22, 1, 0.36, 1);
-  --tray: #f0efeb;
-  --hairline: rgba(47, 52, 55, 0.09);
-  --inner-light: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  --lift: 0 1px 2px rgba(47, 52, 55, 0.04), 0 8px 20px -14px rgba(47, 52, 55, 0.16);
 }
 
-/* Double-Bezel: a white plate seated in a machined tray. */
 .answer {
-  border: 0;
-  border-radius: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-surface);
   padding: 20px 22px;
-  box-shadow:
-    0 0 0 5px var(--tray),
-    0 0 0 6px var(--hairline),
-    var(--inner-light);
+  box-shadow: none;
 }
 
-.answer--plain {
-  box-shadow:
-    0 0 0 5px var(--tray),
-    0 0 0 6px var(--hairline);
+.generative-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-surface);
+}
+
+.generative-layout > .answer {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .answer__summary {
