@@ -3,6 +3,7 @@
 import { CalendarBlank, ChatCircleDots, List } from "@phosphor-icons/react";
 
 import type { DatasetUser } from "@/lib/contracts";
+import { ThemeToggle } from "./ThemeToggle";
 
 /**
  * Wordmark, analysis date control and the dataset user picker.
@@ -73,6 +74,8 @@ export function SessionHeader({
             onChange={(event) => onAnalysisDateChange(event.target.value)}
           />
         </div>
+
+        <ThemeToggle />
 
         <div className="field">
           <label className="field__label" htmlFor="dataset-user">

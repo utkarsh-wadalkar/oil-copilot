@@ -16,6 +16,7 @@
   "dependencies": {
     "@openuidev/cli": "^0.6.0",
     "@openuidev/lang-core": "^1.0.1",
+    "@openuidev/observability-cloud": "^0.0.3",
     "@openuidev/react-lang": "^1.0.1",
     "@phosphor-icons/react": "^2.1.10",
     "border-beam": "^1.4.1",

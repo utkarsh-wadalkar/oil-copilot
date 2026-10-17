@@ -36,7 +36,11 @@ TOOL_SCHEMAS = [
             'equipment_kind': {'type': 'string'},
             'limit': {'type': 'integer'},
             'producing': {'type': 'boolean'},
-            'reportable_only': {'type': 'boolean'},
+            'reportable_only': {'type': 'boolean',
+                                'description': ("Only use when the user asks which spills were reportable / needed "
+                                                "a regulator report / crossed the SOP threshold. A 'real spill' "
+                                                "means a detection that survives corrections, which is the "
+                                                "default; do not set this filter for it.")},
             'query': {'type': 'string'},
             'visual': {'type': 'string', 'enum': ['text', 'card', 'table', 'line', 'bar', 'map', 'heatmap']},
         }, 'required': ['operation']}}},
@@ -75,7 +79,12 @@ SYSTEM_PROMPT = (
     'Rules and thresholds live in well-type manuals and SOPs; asset_query already applies them. '
     'To refer to earlier discussion, call recall_results (private to the current user). '
     'To change any stored value you MUST call propose_feedback; a human confirms it later. '
-    'Prefer precise, source-backed answers and choose the requested visualisation via the visual field.'
+    'Prefer precise, source-backed answers and choose the requested visualisation via the visual field. '
+    'Routing rules: "not producing right now" is operation=status with producing=false and no date window. '
+    'A "real spill" is a detection that survives corrections (the default); reportable_only is only for '
+    'questions about reporting, regulators, fines or SOP thresholds. "Last N weeks" for temperatures means '
+    'the last N weekly readings, not N*7 calendar days from today. Ask for one operation per tool call and '
+    'let the tool decide thresholds, windows and totals.'
 )
 
 
