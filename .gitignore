@@ -11,3 +11,7 @@ assets/flytbase-dataset/
 data/
 playwright-report/
 test-results/
+vendor/
+docs/*
+*.egg-info/
+.pip-tmp/
