@@ -214,6 +214,38 @@ def test_evidence_resolves_to_a_trusted_source_slice(client):
     assert body['source_id'] and body['excerpt'] and body['path']
 
 
+def test_model_path_refuses_a_dead_private_reference(client):
+    """A recall that finds nothing must be named as such, not answered from the fleet.
+
+    The model path has no planner to produce the refusal sentence, so the orchestrator has to
+    recognise an empty recall and say plainly that this user has no such earlier conversation.
+    """
+    from app.orchestrator import Orchestrator
+
+    class RecallOnlyProvider:
+        configured = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, tools=None, model=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {'tool_calls': [{'function': {
+                    'name': 'recall_results',
+                    'arguments': {'query': 'three wells discussed yesterday'}}}]}
+            return {'content': 'I cannot answer that.'}
+
+    conversation_id = client.post('/conversations', json={}, headers=headers(USER_B)).json()['id']
+    with client.factory() as session:
+        orchestrator = Orchestrator(session, provider=RecallOnlyProvider(), settings=get_settings())
+        outcome = orchestrator.answer(USER_B, conversation_id,
+                                      'For the three wells we discussed yesterday, what have repairs cost this year?')
+    summary = outcome['envelope']['summary']
+    assert 'no earlier conversation' in summary.lower()
+    assert outcome['envelope']['selected_well_ids'] == []
+
+
 def test_capabilities_and_indexing_status(client):
     capabilities = client.get('/capabilities', headers=headers(USER_A))
     assert capabilities.status_code == 200
@@ -222,3 +254,43 @@ def test_capabilities_and_indexing_status(client):
     status = client.get('/indexing/status', headers=headers(USER_A))
     assert status.status_code == 200
     assert 'jobs' in status.json()
+
+
+def test_tool_arguments_are_normalised_and_bad_targets_are_tool_errors(client):
+    """The model's tool call is untrusted input.
+
+    A real run sent ``value: "5.4 bbl"`` (a string) and a well id where an inspection id
+    belonged; the first was silently stored as a non-numeric correction and the second
+    crashed the whole turn with HTTP 500. Both must be handled at the tool boundary.
+    """
+    from app.knowledge import AssetKnowledge
+    from app.orchestrator import Orchestrator, _coerce_arguments, _numeric
+
+    assert _numeric('5.4 bbl') == 5.4
+    assert _numeric('41.0 C') == 41.0
+    assert _numeric(4.5) == 4.5
+    assert _numeric(None) is None
+    assert _coerce_arguments('{"kind": "claim"}') == {'kind': 'claim'}
+
+    with client.factory() as session:
+        orchestrator = Orchestrator(session, provider=None, settings=get_settings())
+        knowledge = AssetKnowledge(session, date(2026, 10, 17))
+        envelope = knowledge.query({'operation': 'spills', 'well_ids': ['WELL-0151'],
+                                    'start': '2026-09-20', 'end': '2026-09-30'})
+        inspection_id = envelope.visual.data[0]['inspection_id']
+        # A well id in the inspection slot is a tool error the model can retry, not a 500.
+        payload, env, draft, note = orchestrator._execute_tool(
+            USER_A, 'conv', 'propose_feedback',
+            {'kind': 'correction', 'target_id': 'WELL-0151', 'field': 'spill_est_volume_bbl',
+             'value': '5.4 bbl', 'reason': 'field crew measured 5.4'}, date(2026, 10, 17), knowledge)
+        assert 'error' in payload and env is None and draft is None
+        # The correct target produces a numeric before/after draft.
+        payload, env, draft, note = orchestrator._execute_tool(
+            USER_A, 'conv', 'propose_feedback',
+            {'kind': 'correction', 'target_id': inspection_id, 'field': 'spill_est_volume_bbl',
+             'value': '5.4 bbl', 'unit': 'bbl',
+             'reason': 'field crew measured 5.4 bbl instead of the AI estimate'}, date(2026, 10, 17), knowledge)
+        assert draft is not None and draft['status'] == 'pending'
+        assert draft['preview']['before'] == 4.5 and draft['preview']['after'] == 5.4
+        assert draft['preview']['plausible'] is True
+        session.rollback()

@@ -156,6 +156,7 @@ class Orchestrator:
         envelopes: list[dict] = []
         draft_payload = None
         recall_note = None
+        unresolved_recall = False
         tool_trace: list[dict] = []
         calls = 0
         for _ in range(6):
@@ -184,7 +185,13 @@ class Orchestrator:
                     draft_payload = draft
                 if note:
                     recall_note = note
+                    if name == 'recall_results' and not note.get('candidates'):
+                        unresolved_recall = True
                 messages.append({'role': 'tool', 'content': json.dumps(payload, default=str)})
+        if not envelopes and draft_payload is None and unresolved_recall:
+            # The user referred to "the wells we discussed" and this user has no such history.
+            # Say that plainly; never fall through to a generic rephrase message or a fleet query.
+            recall_note = {**(recall_note or {}), 'unresolved_reference': True}
         if not envelopes and draft_payload is None and recall_note is None:
             # The model produced nothing usable: fall back to the grounded planner.
             envelopes, draft_payload, recall_note = self._run_offline(
