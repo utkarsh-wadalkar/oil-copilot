@@ -15,6 +15,10 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+# Client key for OpenUI Reliability telemetry. Public by design, but supplied at
+# build time so it is never copied from a committed or local .env file.
+ARG NEXT_PUBLIC_OPENUI_API_KEY=
+ENV NEXT_PUBLIC_OPENUI_API_KEY=$NEXT_PUBLIC_OPENUI_API_KEY
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

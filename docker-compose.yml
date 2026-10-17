@@ -119,6 +119,9 @@ services:
       args:
         # Public origin the browser calls the backend on. Not a secret.
         NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+        # Client key for OpenUI Reliability telemetry. Public by design; read from
+        # the shell/.env at build time so it is never committed.
+        NEXT_PUBLIC_OPENUI_API_KEY: ${NEXT_PUBLIC_OPENUI_API_KEY:-}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
