@@ -1,0 +1,13 @@
+.superpowers/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+node_modules/
+.next/
+*.tsbuildinfo
+assets/flytbase-dataset/
+data/
+playwright-report/
+test-results/
