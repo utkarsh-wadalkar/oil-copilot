@@ -19,7 +19,7 @@ from app.domain import (FeedbackSpec, InspectionFact, MaintenanceFact, Operation
                         RegulatorFact, WellFact)
 from app.knowledge import AssetKnowledge, utc
 from app.models import (ActiveRecord, Conversation, Correction, FeedbackDraft, Message, MessageRequest,
-                        RecordVersion, ResultMeta, Rule, SavedResult, new_id, now_utc)
+                        RecordVersion, ResultMeta, Rule, SavedResult, SourceVersion, new_id, now_utc)
 from app.provider import OllamaProvider, ProviderError, ProviderRateLimited, ProviderUnavailable
 from app.schemas import AnswerEnvelope, EvidenceRef, Finding, VisualSpec
 
@@ -212,8 +212,14 @@ class Orchestrator:
             return note, None, None, note
         if name == 'propose_feedback':
             try:
+                args = dict(arguments or {})
+                if args.get('kind') == 'correction':
+                    if args.get('field') in _NUMERIC_FIELDS:
+                        args['value'] = _numeric(args.get('value'))
+                    elif args.get('field') == 'spill_detected' and isinstance(args.get('value'), str):
+                        args['value'] = args['value'].strip().lower() in {'true', 'yes', '1'}
                 draft = FeedbackService(self.session, self.settings).prepare(
-                    author_id=user_id, conversation_id=conversation_id, knowledge=knowledge, **arguments)
+                    author_id=user_id, conversation_id=conversation_id, knowledge=knowledge, **args)
             except Exception as exc:  # a bad argument must come back as a tool error, not a failed turn
                 return {'error': f'{type(exc).__name__}: {exc}',
                         'hint': 'Resolve the exact record id and field with asset_query, then retry.'}, None, None, None
@@ -487,6 +493,30 @@ class Orchestrator:
                     f'{due:%Y-%m-%d %H:%M} ({limit:g} h) and '
                     f'{"one is recorded" if filed else "none is recorded, a possible SR-01 breach"}. '
                     f'Agency verification is due by {verification_due:%Y-%m-%d}.')
+                # The repair report was written under the old estimate. If its class and
+                # reporting conclusion no longer hold, say so instead of leaving a stale
+                # "no reporting duty" on the record.
+                report = self.session.scalar(select(MaintenanceFact).where(
+                    MaintenanceFact.inspection_id == inspection_id,
+                    MaintenanceFact.report_version_id.is_not(None)))
+                if report is not None:
+                    record = self.session.get(RecordVersion, report.report_version_id)
+                    source = self.session.get(SourceVersion, record.source_id) if record else None
+                    text = source.content if source else ''
+                    stated = re.search(r'\((minor|moderate|reportable|major)\s+class\)|'
+                                       r'for\s+(minor|moderate|reportable|major)\s+spills', text, re.I)
+                    old_class = (stated.group(1) or stated.group(2)).lower() if stated else None
+                    new_class = 'major' if major else 'reportable'
+                    if old_class and old_class != new_class:
+                        sentences.append(
+                            f'Repair report {report.id} classified it as {old_class} on the old '
+                            f'{_display(draft_payload.get("before_value"))} bbl estimate and listed no '
+                            f'reporting duty; that no longer holds.')
+                    limit_hours = float(knowledge._value('containment_hours'))
+                    if report.containment_hours is not None and report.containment_hours > limit_hours:
+                        sentences.append(
+                            f'The same report shows containment took about {report.containment_hours:g} h, '
+                            f'over the {limit_hours:g} h limit (SR-02).')
         return sentences, calculations, conflicts
 
     def _pending_claim(self, draft_payload):
@@ -508,7 +538,7 @@ class Orchestrator:
             base = (f'Prepared a {draft_payload.get("kind")} change for {draft_payload.get("target_id") or draft_payload.get("well_id")} '
                     f'({_display(draft_payload.get("before_value"))} -> {_display(draft_payload.get("after_value"))}). '
                     f'Confirm to publish it; nothing has changed yet.')
-            if envelopes:
+            if envelopes and draft_payload.get('field') in {'wellhead_temp_c', 'ambient_temp_c'}:
                 row = (envelopes[0].get('visual') or {}).get('data') or []
                 if row:
                     first = row[0]
@@ -805,6 +835,24 @@ def draft_analysis_date(session) -> date:
 def _spec_from_arguments(arguments: dict) -> QuerySpec:
     clean = {k: v for k, v in (arguments or {}).items() if v is not None}
     return QuerySpec.model_validate(clean)
+
+
+# Fields whose stored value is numeric. A model sometimes sends "5.4 bbl" instead of 5.4;
+# normalising here keeps the preview and the plausibility check honest instead of silently
+# storing a string that no later query would compare correctly.
+_NUMERIC_FIELDS = {'wellhead_temp_c', 'ambient_temp_c', 'spill_est_volume_bbl', 'spill_area_pct'}
+
+
+def _numeric(value):
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    match = re.search(r'-?\d+(?:\.\d+)?', str(value))
+    if not match:
+        return value
+    number = float(match.group())
+    return int(number) if number.is_integer() and '.' not in match.group() else number
 
 
 def _coerce_arguments(arguments):

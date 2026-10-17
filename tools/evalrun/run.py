@@ -155,10 +155,12 @@ def app_mode(settings) -> str:
 
 
 # ---------------------------------------------------------------- ask
-def ask_one(client, user: str, question: str, tag: str) -> dict:
+def ask_one(client, user: str, question: str, tag: str, analysis_date: str | None = None) -> dict:
     headers = {'X-User-ID': user}
     conversation = client.post('/conversations', json={}, headers=headers).json()['id']
     body = {'content': question, 'client_message_id': f'ev-{tag}'[:64]}
+    if analysis_date:
+        body['analysis_date'] = analysis_date
     response = client.post(f'/conversations/{conversation}/messages', json=body, headers=headers)
     if response.status_code != 200:
         return {'error': f'HTTP {response.status_code}', 'detail': response.text[:800]}
@@ -191,7 +193,7 @@ def run_questions(args) -> int:
     with client as active:
         for question in questions:
             tag = f'{question.id}-{hashlib.sha256(question.text.encode()).hexdigest()[:8]}'
-            payload = ask_one(active, args.user, question.text, tag)
+            payload = ask_one(active, args.user, question.text, tag, args.analysis_date)
             records.append({'id': question.id, 'question': question.text,
                             'expected': question.expected, 'response': payload})
 
@@ -423,6 +425,8 @@ def main(argv=None) -> int:
     ask.add_argument('--limit', type=int, default=0)
     ask.add_argument('--live-model', action='store_true', help='use the configured model instead of the offline planner')
     ask.add_argument('--base-url', default=None, help='ask a running server instead of the app in process')
+    ask.add_argument('--analysis-date', default=None,
+                     help='the "today" the periods resolve against (the question document says 2026-10-16)')
 
     score = sub.add_parser('score', help='audit a recorded run')
     score.add_argument('--out', default=None)

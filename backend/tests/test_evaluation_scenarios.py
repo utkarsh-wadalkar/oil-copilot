@@ -191,6 +191,17 @@ def test_q11_repair_cost_for_the_three_earlier_wells(imported):
     assert all(r['evidence_ids'] for r in rows(answer))
 
 
+def test_q1_status_card_names_the_inspection_method_and_inspector(client):
+    """Q1: the card says the latest inspection was by drone, by Ryan Brooks."""
+    answer = chat(client, USER_A, 'Is WELL-0001 producing oil right now? When was it last '
+                                  'inspected, and by whom? Show me its status card.', 'cm-q1')
+    assert answer['visual']['kind'] == 'card'
+    row = answer['visual']['data'][0]
+    assert (row['inspection_id'], row['date'], row['method'], row['inspector']) == (
+        'INS-0001-0203', '2026-10-15', 'drone', 'Ryan Brooks')
+    assert row['producing'] is False and row['stale_recorded_status'] is True
+
+
 def test_q11_chat_recalls_this_users_earlier_wells(client):
     """Q11: day 2, in a new chat, recalls the three wells of day 1 and their 2026 costs."""
     day_one = chat(client, USER_A, 'Which 3 wells in Northeast Block 7 had the most downtime in '
@@ -255,6 +266,10 @@ def test_q13_chat_prepares_the_volume_correction_and_flags_reporting(client):
     assert proposed['SR-01']['due_at'].startswith('2026-09-25T15:30')
     assert proposed['SR-03']['due_at'].startswith('2026-11-23')
     assert 'reportable' in turn['answer']['summary'].lower()
+    # The repair report's old "moderate / no reporting duty" conclusion no longer holds.
+    assert 'moderate' in turn['answer']['summary'].lower()
+    assert 'no longer holds' in turn['answer']['summary'].lower()
+    assert '6.4' in turn['answer']['summary'], 'the same report shows an SR-02 containment breach'
     confirmed = client.post(f"/feedback/{draft['id']}/confirm", json={}, headers=headers(USER_A))
     assert confirmed.status_code == 200, confirmed.text
 

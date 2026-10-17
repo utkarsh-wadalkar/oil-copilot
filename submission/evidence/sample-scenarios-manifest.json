@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-10-17T10:31:47.270234+00:00",
+  "dataset": "assets/flytbase-dataset/sample-data",
+  "questions_file": "assets\\flytbase-dataset\\03-evaluation-queries.md",
+  "questions_sha256": "c0a7ae962aa1f2129191aed4244d47babded1de6c5da7e587e5554f9245b68f6",
+  "database": "eval-runs/eval.sqlite3",
+  "mode": "offline-deterministic",
+  "user": "U-201",
+  "count": 17,
+  "seconds": 51.1,
+  "git_head": "ee43b37f8ec01910a058563b150958a2957b95e4"
+}

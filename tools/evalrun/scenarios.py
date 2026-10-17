@@ -132,6 +132,7 @@ def q1(r):
     r.eq('Q1', 'inspection id', 'INS-0001-0203', row.get('inspection_id'))
     r.eq('Q1', 'date', '2026-10-15', row.get('date'))
     r.eq('Q1', 'inspector', 'Ryan Brooks', row.get('inspector'))
+    r.eq('Q1', 'inspection method', 'drone', row.get('method'))
     r.eq('Q1', 'delta above air', 3.2, round(row.get('delta_c') or 0, 1))
     r.eq('Q1', 'T200 limit', 15, round(row.get('threshold_c') or 0, 1))
     r.contains('Q1', 'reason names the planned rod string work', 'rod string', row.get('reason'))
@@ -363,6 +364,8 @@ def q13(r):
                json.dumps(answer(first).get('calculations') or []) + ' ' + summary(first))
     r.contains('Q13', 'SR-03 verification due 23 Nov 2026', '2026-11-23',
                json.dumps(answer(first).get('calculations') or []) + ' ' + summary(first))
+    r.contains('Q13', 'the old moderate class no longer holds', 'no longer holds', summary(first))
+    r.contains('Q13', 'the report shows 6.4 h containment', '6.4', summary(first))
     compliance = r.say(MICHAEL, 'Which rules has WELL-0151 broken in the last 12 months?', 'q13b')
     found = protocols(compliance)
     r.eq('Q13', 'SR-01 flagged for no written notice', 'possible breach',

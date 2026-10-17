@@ -167,7 +167,7 @@ class AssetKnowledge:
         record=self.session.get(RecordVersion,i.version_id)
         refs=self._evidence(record)+self._evidence(rule)+self._evidence(w.version_id)+self._correction_evidence(i.id)
         delta=round(i.wellhead_temp_c-i.ambient_temp_c,4)
-        row={'well_id':w.id,'inspection_id':i.id,'date':i.inspected_at.date().isoformat(),'inspected_at':utc(i.inspected_at).isoformat(),'well_type':w.well_type,'wellhead_temp_c':i.wellhead_temp_c,'ambient_temp_c':i.ambient_temp_c,'delta_c':delta,'threshold_c':rule.value,'producing':delta>=rule.value,'inspector':self._user(i.inspector_id),'inspection_remark':record.payload.get('notes',''),'evidence_ids':refs}
+        row={'well_id':w.id,'inspection_id':i.id,'date':i.inspected_at.date().isoformat(),'inspected_at':utc(i.inspected_at).isoformat(),'well_type':w.well_type,'wellhead_temp_c':i.wellhead_temp_c,'ambient_temp_c':i.ambient_temp_c,'delta_c':delta,'threshold_c':rule.value,'producing':delta>=rule.value,'inspector':self._user(i.inspector_id),'method':record.payload.get('method'),'inspection_remark':record.payload.get('notes',''),'evidence_ids':refs}
         if 'not moving' in row['inspection_remark'].lower() and row['producing'] and self.session.scalar(select(Correction).where(Correction.target_id==i.id)):
             self.conflicts.append({'target_id':i.id,'message':'Corrected thermal reading disagrees with inspector remark. Please confirm.','remark':row['inspection_remark'],'evidence_ids':refs})
         return row
