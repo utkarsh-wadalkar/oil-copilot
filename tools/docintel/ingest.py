@@ -39,6 +39,11 @@ sys.path.insert(0, str(REPO / 'backend'))
 
 import httpx  # noqa: E402
 from neo4j import GraphDatabase  # noqa: E402
+from neo4j.exceptions import (  # noqa: E402
+    ServiceUnavailable,
+    SessionExpired,
+    TransientError,
+)
 
 from app.config import get_settings  # noqa: E402
 
@@ -376,8 +381,16 @@ class GraphWriter:
         self.driver.close()
 
     def run(self, query: str, **params) -> list:
-        with self.driver.session() as session:
-            return [record.data() for record in session.run(query, **params)]
+        """Execute one statement, retrying transient Aura routing/connection blips."""
+        last: Exception | None = None
+        for attempt in range(5):
+            try:
+                with self.driver.session() as session:
+                    return [record.data() for record in session.run(query, **params)]
+            except (ServiceUnavailable, SessionExpired, TransientError) as exc:
+                last = exc
+                time.sleep(min(2 ** attempt, 20))
+        raise last  # type: ignore[misc]
 
     def ensure_schema(self):
         for label in UNIQUE_ID_LABELS:
@@ -393,9 +406,13 @@ class GraphWriter:
     def write_document(self, doc: dict, payload: dict, well_id: str | None = None,
                        well_type: str | None = None):
         chunks = payload.get('chunks') or []
+        # sha256 is written last: a document only looks "done" once every part of it landed,
+        # so an interrupted write is re-ingested instead of being skipped forever.
+        props = dict(doc['props'])
+        sha = props.pop('sha256', None)
         self.run(
             'MERGE (d:Document {id: $id}) SET d += $props',
-            id=doc['id'], props={**doc['props'], 'run_id': self.run_id})
+            id=doc['id'], props={**props, 'run_id': self.run_id})
         if chunks:
             self.run(
                 'MATCH (d:Document {id: $id}) UNWIND $chunks AS c '
@@ -446,6 +463,10 @@ class GraphWriter:
             self.run('MATCH (d:Document {id: $id}) '
                      'MERGE (t:WellType {id: $t}) MERGE (d)-[:DESCRIBES]->(t)',
                      id=doc['id'], t=well_type)
+        if sha is not None:
+            self.run('MATCH (d:Document {id: $id}) SET d.sha256 = $sha, d.ingested_at = $ts',
+                     id=doc['id'], sha=sha,
+                     ts=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
 
     @staticmethod
     def _safe(token: str) -> str:
@@ -657,16 +678,22 @@ def main() -> int:
                             print(f'  x {doc["path"].name}: {type(exc).__name__}: {exc}', flush=True)
                             continue
                         payload['chunks'] = [dict(c, document_id=doc['id']) for c in payload['chunks']]
-                        writer.write_document(
-                            {'id': doc['id'], 'props': {
-                                'path': doc['id'], 'title': title_for(doc['path'], doc['text']),
-                                'kind': doc['kind'], 'well_id': doc.get('well_id'),
-                                'bytes': len(doc['text'].encode()),
-                                'sha256': doc['sha256'],
-                                'chunk_count': len(payload['chunks']),
-                                'entity_count': len(payload['entities']),
-                                'model': settings.ollama_model}},
-                            payload, well_id=doc.get('well_id'), well_type=doc.get('well_type'))
+                        try:
+                            writer.write_document(
+                                {'id': doc['id'], 'props': {
+                                    'path': doc['id'], 'title': title_for(doc['path'], doc['text']),
+                                    'kind': doc['kind'], 'well_id': doc.get('well_id'),
+                                    'bytes': len(doc['text'].encode()),
+                                    'sha256': doc['sha256'],
+                                    'chunk_count': len(payload['chunks']),
+                                    'entity_count': len(payload['entities']),
+                                    'model': settings.ollama_model}},
+                                payload, well_id=doc.get('well_id'), well_type=doc.get('well_type'))
+                        except Exception as exc:  # noqa: BLE001
+                            failed += 1
+                            print(f'  x write {doc["path"].name}: {type(exc).__name__}: {exc}',
+                                  flush=True)
+                            continue
                         done += 1
                         if done % 10 == 0 or done == 1:
                             rate = done / max(time.time() - started, 1e-6)

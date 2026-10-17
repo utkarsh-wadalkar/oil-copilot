@@ -61,8 +61,10 @@ Use the project virtualenv (it already has `httpx`, `neo4j`, and `sentence-trans
 | `--embed` | compute 384-dim MiniLM embeddings per chunk |
 | `--skip-md` / `--skip-structural` | run only one half |
 
-**Idempotent:** every `Document` is keyed by its repository-relative path and skipped when
-its `sha256` is unchanged, so re-running is cheap and safe.
+**Idempotent and interrupt-safe:** every `Document` is keyed by its repository-relative path
+and skipped when its `sha256` is unchanged. The hash is written **last**, so a document
+interrupted mid-write is re-ingested next run rather than being skipped forever. Writes retry
+transient Aura routing/connection blips with backoff instead of aborting the run.
 
 ## Viewing it in Bloom
 

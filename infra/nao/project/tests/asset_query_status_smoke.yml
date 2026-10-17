@@ -1,0 +1,8 @@
+name: asset_query_status_smoke
+prompt: List the current status of all wells and summarise how many are producing.
+# The Copilot sidecar exposes NO warehouse: SQL-based nao tests cannot run here.
+# This test documents the intended smoke check via the Asset Knowledge MCP tool
+# and is a no-op for the framework's SQL runner (kept for format compatibility).
+sql: |
+  SELECT 'asset_query' AS tool,
+         'operation=status' AS note

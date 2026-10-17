@@ -1,0 +1,127 @@
+{
+  "root": "Layout",
+  "components": {
+    "Layout": {
+      "signature": "Layout(children: (Answer | AnswerPart | Note)[])",
+      "description": "The top of every program: an ordered stack of answer parts and notes."
+    },
+    "Answer": {
+      "signature": "Answer(resultId: string)",
+      "description": "The complete answer: summary, findings, warnings, conflicts, visual, evidence and calculations."
+    },
+    "AnswerPart": {
+      "signature": "AnswerPart(resultId: string, part: \"meta\" | \"summary\" | \"findings\" | \"warnings\" | \"conflicts\" | \"visual\" | \"evidence\" | \"calculations\")",
+      "description": "One section of the answer. Use it to lead with the important part and drop sections the reader does not need."
+    },
+    "Note": {
+      "signature": "Note(text: string)",
+      "description": "A short annotation in your own words. Do not restate numbers; the answer already carries them."
+    }
+  },
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "Layout": {
+        "$ref": "#/$defs/Layout"
+      },
+      "Answer": {
+        "$ref": "#/$defs/Answer"
+      },
+      "AnswerPart": {
+        "$ref": "#/$defs/AnswerPart"
+      },
+      "Note": {
+        "$ref": "#/$defs/Note"
+      }
+    },
+    "required": [
+      "Layout",
+      "Answer",
+      "AnswerPart",
+      "Note"
+    ],
+    "additionalProperties": false,
+    "$defs": {
+      "Layout": {
+        "type": "object",
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Answer"
+                },
+                {
+                  "$ref": "#/$defs/AnswerPart"
+                },
+                {
+                  "$ref": "#/$defs/Note"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "children"
+        ],
+        "additionalProperties": false,
+        "description": "The top of every program: an ordered stack of answer parts and notes."
+      },
+      "Answer": {
+        "type": "object",
+        "properties": {
+          "resultId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resultId"
+        ],
+        "additionalProperties": false,
+        "description": "The complete answer: summary, findings, warnings, conflicts, visual, evidence and calculations."
+      },
+      "AnswerPart": {
+        "type": "object",
+        "properties": {
+          "resultId": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string",
+            "enum": [
+              "meta",
+              "summary",
+              "findings",
+              "warnings",
+              "conflicts",
+              "visual",
+              "evidence",
+              "calculations"
+            ]
+          }
+        },
+        "required": [
+          "resultId",
+          "part"
+        ],
+        "additionalProperties": false,
+        "description": "One section of the answer. Use it to lead with the important part and drop sections the reader does not need."
+      },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "description": "A short annotation in your own words. Do not restate numbers; the answer already carries them."
+      }
+    }
+  }
+}

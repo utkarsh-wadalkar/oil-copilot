@@ -1,0 +1,184 @@
+diff --git a/apps/backend/src/env.ts b/apps/backend/src/env.ts
+index 83a21fc..69b8ad0 100644
+--- a/apps/backend/src/env.ts
++++ b/apps/backend/src/env.ts
+@@ -376,6 +376,24 @@ const baseRawEnvSchema = z.object({
+ 	 */
+ 	MCP_REFRESH_TOKEN_TTL: z.coerce.number().int().positive().default(604800),
+ 
++	/**
++	 * Shared HMAC secret with the Asset Intelligence Copilot backend. Used to sign the short-lived
++	 * actor capability that every call to the Copilot's Asset Knowledge MCP server carries.
++	 */
++	COPILOT_MCP_SECRET: z
++		.string()
++		.optional()
++		.transform((val) => val?.trim() || undefined),
++
++	/**
++	 * Name (from `agent/mcps/mcp.json`) of the Asset Knowledge MCP server. Only this server receives
++	 * a per-invocation signed actor capability derived from the trusted (projectId, userId).
++	 */
++	COPILOT_ASSET_SERVER: z
++		.string()
++		.optional()
++		.transform((val) => val?.trim() || undefined),
++
+ 	POSTHOG_KEY: z.string().optional(),
+ 	POSTHOG_HOST: z.url({ message: 'POSTHOG_HOST must be a valid URL' }).optional(),
+ 	POSTHOG_DISABLED: z
+diff --git a/apps/backend/src/mcp/tools/sub-agent.ts b/apps/backend/src/mcp/tools/sub-agent.ts
+index b488fc3..56dc298 100644
+--- a/apps/backend/src/mcp/tools/sub-agent.ts
++++ b/apps/backend/src/mcp/tools/sub-agent.ts
+@@ -4,10 +4,9 @@ import { type LlmSelectedModel, STORY_FORMATS } from '@nao/shared/types';
+ import { getToolName, type InferUIMessageChunk, isToolUIPart, readUIMessageStream } from 'ai';
+ import { z } from 'zod';
+ 
+-import { MCP_SUB_AGENT_EXCLUDED_TOOLS } from '../../agents/tools';
+ import * as chatQueries from '../../queries/chat.queries';
+ import * as storyQueries from '../../queries/story.queries';
+-import { agentService, defaultAgentToolsExcluding } from '../../services/agent';
++import { agentService, copilotSidecarAgentTools } from '../../services/agent';
+ import { mcpService } from '../../services/mcp';
+ import { skillService } from '../../services/skill';
+ import type { UIMessage, UIMessagePart } from '../../types/chat';
+@@ -164,7 +163,10 @@ export function registerSubAgentTools(server: McpServer, ctx: McpContext): void
+ 
+ 			const agent = await agentService.create(chat, await resolveSubAgentModel(ctx), {
+ 				billingAccessVerifiedProjectId: ctx.projectId,
+-				tools: defaultAgentToolsExcluding(MCP_SUB_AGENT_EXCLUDED_TOOLS),
++				// Restricted in code, not in the prompt (Task 3N): a Copilot-bridged run may only read
++				// context and call MCP tools. Python, sandboxing, stories, task, write, follow-ups and
++				// web search are removed by the allowlist inside copilotSidecarAgentTools.
++				tools: copilotSidecarAgentTools,
+ 			});
+ 			askNaoRuns.start(chat.id);
+ 			const runPromise = runAskNaoInBackground(agent, uiMessages, chat.id, naoChatUrl);
+diff --git a/apps/backend/src/services/agent.ts b/apps/backend/src/services/agent.ts
+index 9d5e8db..7612ae7 100644
+--- a/apps/backend/src/services/agent.ts
++++ b/apps/backend/src/services/agent.ts
+@@ -22,7 +22,7 @@ import { disableModelReasoning, fitThinkingBudget, getProviderMeta, ProviderMode
+ import { interactiveStopConditions } from '../agents/stop-conditions';
+ import { getSystemPromptOverride, hasNaoPromptPlaceholder, injectNaoPrompt } from '../agents/system-prompts';
+ import { llmTelemetry } from '../agents/telemetry';
+-import { getTools } from '../agents/tools';
++import { getTools, MCP_SUB_AGENT_EXCLUDED_TOOLS } from '../agents/tools';
+ import { createWebSearchTools } from '../agents/tools/web-search';
+ import { getConnections, getTableColumnsContent, getUserRules } from '../agents/user-rules';
+ import { ChatForkContextPrompt, MessagingProviderSystemPrompt, SystemPrompt } from '../components/ai';
+@@ -181,6 +181,36 @@ export const defaultAgentToolsExcluding =
+ 			customStoryAuthoring: customStoryAuthoringError(toolContext.userGroupFeatures) === null,
+ 		});
+ 
++/**
++ * Built-in tools a Copilot-bridged `ask_nao` run may use. The restriction is enforced here in code
++ * (via `getTools`' `builtinToolAllowlist`), never in the prompt, so model output cannot widen it:
++ * python, sandboxing, stories, task, write, follow-ups and web search are all removed. `mcp_call`
++ * is kept so the run can reach the Asset Knowledge MCP server.
++ */
++export const COPILOT_SIDECAR_BUILTIN_TOOLS = [
++	'read',
++	'list',
++	'grep',
++	'search',
++	'load_skill',
++	'mcp_call',
++	'clarification',
++];
++
++/** Tool set for the trusted Copilot sidecar; web search is dropped (`{}` extra tools). */
++export const copilotSidecarAgentTools: AgentToolsResolver = ({
++	agentSettings,
++	toolContext,
++	customBoundaries,
++}) =>
++	getTools(agentSettings, {}, {
++		builtinToolAllowlist: COPILOT_SIDECAR_BUILTIN_TOOLS,
++		excludeBuiltinTools: MCP_SUB_AGENT_EXCLUDED_TOOLS,
++		customBoundaries,
++		semanticLayerMode: toolContext.semanticLayerMode,
++		customStoryAuthoring: false,
++	});
++
+ /**
+  * Admin-mode tool set: the same `execute_sql` tool the chat already uses (it
+  * runs against nao's own app database when `ToolContext.adminMode` is set),
+diff --git a/apps/backend/src/services/mcp.ts b/apps/backend/src/services/mcp.ts
+index e541f15..60f103a 100644
+--- a/apps/backend/src/services/mcp.ts
++++ b/apps/backend/src/services/mcp.ts
+@@ -6,12 +6,13 @@ import { debounce } from '@nao/shared';
+ import { mcpJsonSchema } from '@nao/shared';
+ import type { ErrorObject, ValidateFunction } from 'ajv';
+ import Ajv2020 from 'ajv/dist/2020';
++import { SignJWT } from 'jose';
+ import { existsSync, watch } from 'fs';
+ import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises';
+ import { createRuntime, type Runtime, ServerDefinition } from 'mcporter';
+ import { isAbsolute, join, relative, resolve, sep } from 'path';
+ 
+-import { isCloud } from '../env';
++import { env, isCloud } from '../env';
+ import {
+ 	claimMcpDiscoveryUser,
+ 	deleteMcpUserToken,
+@@ -408,6 +409,9 @@ export class McpService {
+ 		await this._validateArgs(server, tool, args);
+ 
+ 		try {
++			if (this._isCopilotAssetServer(server)) {
++				return await this._callToolSignedActor({ projectId, userId, server, tool, args, config });
++			}
+ 			if (await this._ensureOAuthFlag(server, config)) {
+ 				return await this._callToolOAuth({ projectId, userId, server, tool, args, config });
+ 			}
+@@ -430,6 +434,47 @@ export class McpService {
+ 		return runtime.callTool(server, tool, { args });
+ 	}
+ 
++	/** Whether this server is the Copilot Asset Knowledge MCP, which takes a per-call signed actor. */
++	private _isCopilotAssetServer(server: string): boolean {
++		return Boolean(env.COPILOT_ASSET_SERVER) && server === env.COPILOT_ASSET_SERVER;
++	}
++
++	/**
++	 * Calls the Copilot Asset Knowledge MCP with a short-lived capability that binds THIS trusted
++	 * (projectId, userId) pair to the invocation. The capability is minted per call from the run's
++	 * context — never from model arguments, and never from shared mutable header config — so a run
++	 * cannot call as another user and a spoofed `user_id` in tool arguments is ignored.
++	 */
++	private async _callToolSignedActor(opts: {
++		projectId: string;
++		userId: string;
++		server: string;
++		tool: string;
++		args: Record<string, unknown>;
++		config: McpServerConfig;
++	}): Promise<unknown> {
++		const { projectId, userId, server, tool, args, config } = opts;
++		const secret = env.COPILOT_MCP_SECRET;
++		if (!secret) {
++			throw new Error('COPILOT_MCP_SECRET is not configured; cannot call the Asset Knowledge MCP.');
++		}
++		const capability = await new SignJWT({ project_id: projectId })
++			.setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
++			.setIssuer('nao-sidecar')
++			.setAudience(server)
++			.setSubject(userId)
++			.setIssuedAt()
++			.setJti(crypto.randomUUID())
++			.setExpirationTime('60s')
++			.sign(new TextEncoder().encode(secret));
++		const headers = {
++			...(config.headers ?? {}),
++			Authorization: `Bearer ${capability}`,
++			'X-Nao-Actor-Capability': capability,
++		};
++		return this._withHttpClient(config, headers, (client) => client.callTool({ name: tool, arguments: args }));
++	}
++
+ 	private async _callToolOAuth(opts: {
+ 		projectId: string;
+ 		userId: string;

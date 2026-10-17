@@ -15,3 +15,8 @@ vendor/
 docs/*
 *.egg-info/
 .pip-tmp/
+
+# Local evaluation runs: loaded datasets, databases and recorded answers.
+# Curated evidence is copied into submission/evidence/ instead.
+/eval-runs/
+backend/.pytest-tmp/

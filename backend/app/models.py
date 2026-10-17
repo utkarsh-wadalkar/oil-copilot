@@ -214,6 +214,49 @@ class ConversationContext(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
+class NaoAccount(Base):
+    """Private per-dataset-user mapping to a nao sidecar account.
+
+    The nao account owns its own strong random credential (never a user password) and is
+    provisioned intentionally, so it never requires a password reset. ``nao_user_id`` is the
+    trusted subject minted into every actor capability the sidecar presents to ``/mcp``.
+    """
+
+    __tablename__ = "nao_accounts"
+    __table_args__ = (UniqueConstraint("app_user_id", name="uq_nao_account_app_user"),
+                      UniqueConstraint("nao_user_id", name="uq_nao_account_nao_user"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    app_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    nao_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    nao_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    nao_project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class NaoToolResult(Base):
+    """A trusted answer envelope produced by an Asset Knowledge MCP tool call.
+
+    The tool stores the full, validated envelope server-side and returns only a reference to
+    the reasoning loop. The app coordinator later loads owned envelopes by request correlation,
+    so the model can never fabricate the payload the UI renders.
+    """
+
+    __tablename__ = "nao_tool_results"
+    __table_args__ = (Index("ix_nao_result_owner", "app_user_id", "request_id"),
+                      Index("ix_nao_result_conversation", "conversation_id", "created_at"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    app_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    nao_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    request_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    tool: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="complete")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONValue, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
 class MessageRequest(Base):
     """Idempotency ledger for a client-submitted message."""
 

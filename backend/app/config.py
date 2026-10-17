@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     ollama_base_url: str = "https://ollama.com"
     ollama_model: str = "gemma4:31b"
     embeddings_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # Generative UI (OpenUI Lang). OUI-1 is served through any OpenAI-compatible endpoint
+    # (vLLM serving thesysdev/OUI-1, or OpenUI Gateway). The model chooses composition only:
+    # every value comes from the validated envelope, never from the model.
+    openui_enabled: bool = False
+    openui_base_url: str = "http://localhost:8080/v1"
+    openui_model: str = "thesysdev/OUI-1"
+    openui_api_key: str = "local"
+    openui_spec_path: str = "frontend/lib/generated/ui-spec.json"
+    openui_timeout_seconds: float = 30.0
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "copilot-dev-only"
@@ -50,7 +60,19 @@ class Settings(BaseSettings):
     nao_project_id: str = ""
     nao_chat_timeout_seconds: float = 45.0
     nao_poll_seconds: float = 1.0
+    nao_max_polls: int = 30
+    # Exact private mapping store written by the bootstrap helper (git-ignored data/).
+    nao_credentials_path: str = "/data/nao-credentials.json"
+    # Shared HS256 secret with the nao sidecar (data/nao-secrets.env). Mints the per-invocation
+    # actor capability that nao attaches to every Asset Knowledge tool call.
     copilot_mcp_secret: str = ""
+    # Enumerate/schema-only discovery credential. Never authorizes tools/call.
+    copilot_mcp_discovery_token: str = ""
+    # Name of the Asset Knowledge MCP server in the nao project's agent/mcps/mcp.json.
+    nao_asset_server: str = "asset-knowledge"
+    # Audience + issuer of the actor capability; both sides pin these.
+    nao_actor_issuer: str = "nao-sidecar"
+    nao_actor_audience: str = "asset-knowledge"
 
 
 @lru_cache

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app import ui_model
 from app.config import Settings, get_settings
 from app.db import get_session
 from app.domain import InspectionFact, Operation, QuerySpec, WellFact
@@ -202,6 +203,21 @@ def create_router(settings: Settings | None = None, provider=None, memory=None, 
                 'validity': (meta.validity if meta else {'outdated': False}),
                 'previous_result_id': meta.previous_result_id if meta else None,
                 'analysis_date': meta.analysis_date.isoformat() if meta and meta.analysis_date else None}
+
+    @router.post('/results/{result_id}/ui')
+    def result_ui(result_id: str, user: str = Depends(current_user), session: Session = Depends(get_session)):
+        """Compose a generative layout for an already validated answer.
+
+        Presentation only: the program selects and orders parts of the stored envelope, and
+        the UI model never supplies a value. Unconfigured or rejected returns 200 with
+        ``enabled`` false and a reason, so the client falls back without an error banner.
+        """
+        result = session.get(SavedResult, result_id)
+        if result is None or result.user_id != user:
+            raise HTTPException(status_code=404, detail='result not found')
+        program = ui_model.compose(result.payload or {}, result.id, settings)
+        return {'result_id': result.id, 'enabled': program.enabled, 'model': program.model,
+                'program': program.program, 'reason': program.reason}
 
     @router.post('/results/{result_id}/refresh')
     def refresh_result(result_id: str, user: str = Depends(current_user), session: Session = Depends(get_session)):

@@ -191,6 +191,25 @@ class AssetKnowledge:
         if not rows: summary='No matching records or applicable source evidence.'
         return AnswerEnvelope(result_id=new_id(),question=q.query or q.operation.value,analysis_date=self.analysis_date,date_window={'start':q.start,'end':q.end or self.analysis_date} if q.start else None,summary=summary,findings=[Finding(label=q.operation.value,value=rows,evidence_ids=list(self.evidence))],evidence=list(self.evidence.values()),conflicts=self.conflicts,visual=visual,selected_well_ids=selected,calculations=self.calculations,revisions={s.id:s.revision for s in self.session.scalars(select(SourceVersion).where(SourceVersion.id.in_({r.source_id for r in self.evidence.values()})))},warnings=self.warnings)
 
+    def _corrected_reading(self,w,q):
+        """A well excluded from a "not producing" answer because its reading was corrected."""
+        inspections={i.id for i,w2 in self._inspection_rows(q.model_copy(update={'well_ids':[w.id],'producing':None}))}
+        if not inspections: return None
+        for c in self.session.scalars(select(Correction).where(Correction.target_kind=='inspection',Correction.target_id.in_(inspections),Correction.field.in_(['wellhead_temp_c','ambient_temp_c']),Correction.status.in_(['accepted','disputed']))):
+            fact=self.session.get(InspectionFact,c.target_id); record=self.session.get(RecordVersion,fact.version_id)
+            original=record.payload
+            threshold=float(self._value('production_delta_c',w.well_type))
+            raw=(original.get('wellhead_temp_c'),original.get('ambient_temp_c'))
+            if None in raw: continue
+            raw_producing=raw[0]-raw[1]>=threshold
+            now_producing=fact.wellhead_temp_c-fact.ambient_temp_c>=threshold
+            if now_producing and not raw_producing:
+                return {'kind':'corrected_exclusion','well_id':w.id,'inspection_id':fact.id,
+                        'original_value':raw[0] if c.field=='wellhead_temp_c' else raw[1],
+                        'corrected_value':c.value,'author':self._user(c.author_id),
+                        'reason':c.reason,'evidence_ids':self._source_evidence(c.source_id)}
+        return None
+
     def _status(self,q):
         rows=[]
         for i,w in self._inspection_rows(q,latest=True):
@@ -218,6 +237,13 @@ class AssetKnowledge:
                 if (positive and not r['producing']) or (negative and r['producing']):
                     self.conflicts.append({'target_id':w.id,'message':'Unconfirmed shared claim disagrees with inspected production. Please confirm.','claim':shared.value,'author':self._user(shared.author_id),'evidence_ids':refs+r['evidence_ids']})
             rows.append(r)
+        if q.producing is False:
+            # A corrected reading can make a well producing again. Say so, rather than
+            # silently dropping it from the list the user asked about.
+            for w in self.wells:
+                if w.id in {r['well_id'] for r in rows}: continue
+                corrected=self._corrected_reading(w,q)
+                if corrected: self.calculations.append(corrected)
         return rows
 
     def _temperatures(self,q):
@@ -228,6 +254,15 @@ class AssetKnowledge:
         for i,w in self._inspection_rows(q,spills=True):
             r=self._reading(i,w); r.update(volume_bbl=i.spill_est_volume_bbl,spill_area_pct=i.spill_area_pct,lat=w.lat,lon=w.lon,area=w.area_name,reportable=(i.spill_est_volume_bbl or 0)>=self._value('reportable_bbl'))
             r['evidence_ids']+=self._evidence(self._rule('reportable_bbl'))
+            if r['reportable']:
+                # Q15/Q13: a reportable spill without a written notice is overdue, not silent.
+                # The deadline is the SOP's own report_hours rule, never a constant.
+                limit=self._value('major_report_hours') if i.spill_est_volume_bbl>=self._value('major_bbl') else self._value('report_hours')
+                due=utc(i.inspected_at)+timedelta(hours=limit)
+                filed=[e for e in self.session.scalars(select(RegulatorFact).where(RegulatorFact.inspection_id==i.id,RegulatorFact.event_type=='spill_report_filed'))]
+                r['notice_due_at']=due.isoformat(); r['notice_status']='filed' if filed else 'overdue'
+                r['notice_hours_to_report']=filed[0].hours_to_report if filed else None
+                r['evidence_ids']+=self._evidence(self._rule('report_hours'))
             notes=self._notes(w.id,i.id)
             if len(notes)>1:
                 refs=[]
@@ -244,7 +279,7 @@ class AssetKnowledge:
             # Counts are SQL aggregates over effective corrections, never vector retrieval.
             month=func.substr(func.cast(InspectionFact.inspected_at,__import__('sqlalchemy').String),1,7)
             counts={(a,m):count for a,m,count in self.session.execute(select(WellFact.area_name,month,func.count()).join(InspectionFact,InspectionFact.well_id==WellFact.id).where(*self._spill_filters(q)).group_by(WellFact.area_name,month))}
-            start=q.start or date(self.analysis_date.year,1,1); end=q.end or self.analysis_date; current=start.replace(day=1); months=[]
+            start=q.start or date(self.analysis_date.year,1,1); end=min(q.end or self.analysis_date,self.analysis_date); current=start.replace(day=1); months=[]
             while current<=end:
                 months.append(current.strftime('%Y-%m')); current=(current.replace(day=28)+timedelta(days=4)).replace(day=1)
             refs=[e for r in rows for e in r['evidence_ids']]
@@ -354,7 +389,15 @@ class AssetKnowledge:
             evidence=self._evidence(event.version_id)+self._evidence(self._rule('nov_response_days'))
             for response in matching: evidence+=self._evidence(response.version_id)
             if not matching or completed_late:
-                rows.append({'well_id':event.well_id,'inspection_id':event.inspection_id,'notice_id':event.id,'protocol':'RC-04','status':'breach' if completed_late else 'possible breach' if now>due else 'pending','due_at':due.date().isoformat(),'completion_status':'completed late' if completed_late else 'open','completed_at':first_response.event_date.isoformat() if first_response else None,'fine_usd':event.fine_usd,'notice_status':event.status,'detail':'Notice response completed after deadline' if completed_late else 'No notice response recorded','evidence_ids':evidence})
+                # A passed response deadline with nothing on record is a breach when the
+                # notice is tied to a recorded inspection: the obligation is fully
+                # evidenced. An unattributed well-level notice stays "possible" because
+                # the missing discovery record cannot be ruled out.
+                attributable = event.inspection_id is not None
+                status=('breach' if completed_late else
+                        'breach' if (not matching and attributable and utc(due)<=utc(now)) else
+                        'possible breach' if utc(now)>utc(due) else 'pending')
+                rows.append({'well_id':event.well_id,'inspection_id':event.inspection_id,'notice_id':event.id,'protocol':'RC-04','status':status,'due_at':due.date().isoformat(),'completion_status':'completed late' if completed_late else 'open','completed_at':first_response.event_date.isoformat() if first_response else None,'fine_usd':event.fine_usd,'notice_status':event.status,'detail':'Notice response completed after deadline' if completed_late else 'No notice response recorded','evidence_ids':evidence})
             elif event.fine_usd:
                 rows.append({'well_id':event.well_id,'notice_id':event.id,'protocol':event.protocol_id,'status':event.status,'fine_usd':event.fine_usd,'detail':'Notice of violation','evidence_ids':evidence})
         for late in self._containment(q): rows.append({**late,'protocol':'SR-02','status':'breach','detail':'Containment exceeded extracted SOP deadline'})

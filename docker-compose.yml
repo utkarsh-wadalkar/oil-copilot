@@ -74,9 +74,60 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+  # Task 3N: nao analytics sidecar.
+  # Profile-gated on purpose: the image builds, but it currently exits at startup because
+  # apps/shared/src/chart-builder.tsx imports `recharts` while apps/shared/package.json never
+  # declares it; it used to resolve through the frontend workspace, which the lean image omits.
+  # Nothing in the default stack depends on this service. See infra/nao/README.md.
+  nao:
+    profiles: ["nao"]
+    image: asset-copilot/nao:975ec422
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5005:5005"
+    environment:
+      BETTER_AUTH_URL: http://nao:5005
+      NAO_DEFAULT_PROJECT_PATH: /nao-project
+      NAO_CONTEXT_SOURCE: local
+      # Separate internal metadata DB; never shares the Copilot's Postgres credentials.
+      DB_URI: sqlite:/app/data/nao-metadata.db
+      NAO_STORAGE_BACKEND: none
+      ENABLE_USER_LOGIN: "true"
+      ENABLE_USER_SIGNUP: "false"
+      MCP_ENDPOINT_ENABLED: "true"
+      # Outbound Asset Knowledge MCP: each call signs a capability with this shared secret
+      # (same value as backend COPILOT_MCP_SECRET, from data/nao-secrets.env).
+      COPILOT_ASSET_SERVER: asset-knowledge
+    env_file:
+      - path: data/nao-secrets.env
+        required: true
+    volumes:
+      - ./infra/nao/project:/nao-project:ro
+      - nao_data:/app/data
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5005/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Public origin the browser calls the backend on. Not a secret.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
 volumes:
   postgres_data:
   neo4j_data:
   neo4j_logs:
   model_cache:
   mem0_data:
+  nao_data:

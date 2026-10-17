@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import engine, get_session, init_db, session_dependency
+from app.mcp_server import create_mcp_router
 from app.routes import create_router
 
 
@@ -33,6 +34,7 @@ def create_app(database_engine=engine, settings: Settings | None = None, provide
         return {"status": "ok", "database": "ok"}
 
     application.include_router(create_router(settings, provider=provider, memory=memory, graph=graph))
+    application.include_router(create_mcp_router(settings))
     return application
 
 

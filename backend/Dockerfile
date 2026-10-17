@@ -5,6 +5,6 @@ COPY pyproject.toml ./
 COPY app ./app
 # CPU-only torch avoids pulling multi-GB CUDA wheels into the image.
 RUN pip install --index-url https://download.pytorch.org/whl/cpu torch \
- && pip install ".[memory]"
+ && pip install ".[memory,nao]"
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

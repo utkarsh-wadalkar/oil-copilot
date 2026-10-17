@@ -1,0 +1,34 @@
+{
+  "name": "asset-intelligence-copilot-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "generate:ui-spec": "openui generate components/uiLibrary.tsx --spec --out lib/generated/ui-spec.json",
+    "predev": "npm run generate:ui-spec",
+    "prebuild": "npm run generate:ui-spec"
+  },
+  "dependencies": {
+    "@openuidev/cli": "^0.6.0",
+    "@openuidev/lang-core": "^1.0.1",
+    "@openuidev/react-lang": "^1.0.1",
+    "@phosphor-icons/react": "^2.1.10",
+    "border-beam": "^1.4.1",
+    "next": "^16.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "thinking-orbs": "^0.3.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import func, or_, select
 
 from app import planner
 from app.config import Settings, get_settings
-from app.domain import FeedbackSpec, InspectionFact, Operation, QuerySpec, WellFact
-from app.knowledge import AssetKnowledge
+from app.domain import (FeedbackSpec, InspectionFact, MaintenanceFact, Operation, QuerySpec,
+                        RegulatorFact, WellFact)
+from app.knowledge import AssetKnowledge, utc
 from app.models import (ActiveRecord, Conversation, Correction, FeedbackDraft, Message, MessageRequest,
                         RecordVersion, ResultMeta, Rule, SavedResult, new_id, now_utc)
 from app.provider import OllamaProvider, ProviderError, ProviderRateLimited, ProviderUnavailable
@@ -46,13 +48,24 @@ TOOL_SCHEMAS = [
             'start': {'type': 'string'}, 'end': {'type': 'string'}, 'limit': {'type': 'integer'}}}}},
     {'type': 'function', 'function': {
         'name': 'propose_feedback',
-        'description': 'Prepare (never publish) a correction, rule change, note or claim for human confirmation.',
+        'description': ('Prepare (never publish) a correction, rule change, note or claim for human confirmation. '
+                        'Call asset_query first to resolve the exact record id; never guess one.'),
         'parameters': {'type': 'object', 'properties': {
             'kind': {'type': 'string', 'enum': ['correction', 'rule', 'note', 'claim']},
-            'target_id': {'type': 'string'}, 'well_id': {'type': 'string'},
-            'field': {'type': 'string'}, 'value': {},
-            'unit': {'type': 'string'}, 'equipment_kind': {'type': 'string'},
-            'reason': {'type': 'string'}, 'valid_from': {'type': 'string'}, 'valid_to': {'type': 'string'},
+            'target_id': {'type': 'string',
+                          'description': ('Exact record id the change applies to. For a correction this is an '
+                                          'inspection id such as INS-0164-0205 (never a well id); for a repair it '
+                                          'is a maintenance id such as MNT-0001-032.')},
+            'well_id': {'type': 'string', 'description': 'Well id such as WELL-0164. Required for well-scoped notes, '
+                                                         'claims and rule changes.'},
+            'field': {'type': 'string',
+                      'description': ('Field being corrected, e.g. wellhead_temp_c, ambient_temp_c, '
+                                      'spill_est_volume_bbl, spill_detected. Required for kind=correction.')},
+            'value': {'description': 'Replacement value with the unit the field uses.'},
+            'unit': {'type': 'string'},
+            'equipment_kind': {'type': 'string', 'description': 'Required for a rule change about one equipment kind.'},
+            'reason': {'type': 'string', 'description': 'Why the stored value is wrong, in the user\'s words.'},
+            'valid_from': {'type': 'string'}, 'valid_to': {'type': 'string'},
         }, 'required': ['kind']}}},
 ]
 
@@ -198,8 +211,12 @@ class Orchestrator:
                                        int(arguments.get('limit') or 5))
             return note, None, None, note
         if name == 'propose_feedback':
-            draft = FeedbackService(self.session, self.settings).prepare(
-                author_id=user_id, conversation_id=conversation_id, knowledge=knowledge, **arguments)
+            try:
+                draft = FeedbackService(self.session, self.settings).prepare(
+                    author_id=user_id, conversation_id=conversation_id, knowledge=knowledge, **arguments)
+            except Exception as exc:  # a bad argument must come back as a tool error, not a failed turn
+                return {'error': f'{type(exc).__name__}: {exc}',
+                        'hint': 'Resolve the exact record id and field with asset_query, then retry.'}, None, None, None
             return _draft_summary(draft), None, draft, None
         return {'error': f'unknown tool {name}'}, None, None, None
 
@@ -218,21 +235,42 @@ class Orchestrator:
     # -- offline planning --------------------------------------------------
     def _run_offline(self, user_id, conversation_id, content, analysis_date, knowledge):
         plan = planner.plan(content, self.session, analysis_date)
+        requires_recall = bool(plan.get('requires_recall'))
         recall_note = None
         if plan.get('recall'):
             recall_note = self.recall_results(user_id, plan['recall'].get('text'), plan['recall'].get('wells'),
-                                              plan['recall'].get('day'), plan['recall'].get('day'), 5)
+                                              plan['recall'].get('day'), plan['recall'].get('day'), 5,
+                                              count=plan['recall'].get('count'))
+        if requires_recall and not (recall_note or {}).get('selected_well_ids'):
+            # "the wells we discussed" could not be resolved against this user's own saved results.
+            # Running the query anyway would answer a different, fleet-wide question.
+            recall_note = {**(recall_note or {}), 'unresolved_reference': True}
         draft_payload = None
         if plan.get('feedback'):
             payload = {k: v for k, v in plan['feedback'].items() if k != 'missing'}
             draft_payload = FeedbackService(self.session, self.settings).prepare(
                 author_id=user_id, conversation_id=conversation_id, knowledge=knowledge, **payload)
-            return [], draft_payload, recall_note
+            envelopes = []
+            if payload.get('kind') == 'claim':
+                # A claim about the present is graded on the inspected state it conflicts with,
+                # so answer the state question too. The claim itself stays a pending draft.
+                well = draft_payload.get('well_id') or draft_payload.get('target_id')
+                if well:
+                    try:
+                        spec = QuerySpec(operation=Operation.status, well_ids=[well])
+                        envelope = knowledge.query(spec).model_dump(mode='json')
+                        envelope['_spec'] = spec.model_dump(mode='json')
+                        envelopes.append(envelope)
+                    except Exception:
+                        envelopes = []
+            return envelopes, draft_payload, recall_note
         envelopes = []
         for raw in plan.get('queries', []):
             spec_dict = dict(raw)
             if recall_note and recall_note.get('selected_well_ids') and not spec_dict.get('well_ids') and not spec_dict.get('area'):
                 spec_dict['well_ids'] = recall_note['selected_well_ids']
+            elif requires_recall and not spec_dict.get('well_ids') and not spec_dict.get('area'):
+                continue  # an unresolved reference must never become a fleet-wide sweep
             try:
                 spec = QuerySpec.model_validate(spec_dict)
             except Exception:
@@ -245,7 +283,7 @@ class Orchestrator:
         return envelopes, None, recall_note
 
     # -- recall ------------------------------------------------------------
-    def recall_results(self, user_id, query=None, well_ids=None, start=None, end=None, limit=5):
+    def recall_results(self, user_id, query=None, well_ids=None, start=None, end=None, limit=5, count=None):
         candidates: list[str] = []
         if self.graph is not None:
             candidates += self.graph.recall(user_id, query, well_ids, _start_iso(start), _end_iso(end), limit)
@@ -257,11 +295,23 @@ class Orchestrator:
                         candidates.append(rid)
             except Exception:
                 pass
+        if not candidates:
+            # The API process has no graph/memory projections wired, so private history also
+            # has to resolve from this user's own durable saved results. Never another user's.
+            candidates = self._private_history(user_id, well_ids, limit, count)
         seen = []
         for rid in candidates:
             if rid in seen:
                 continue
             seen.append(rid)
+        if count:
+            # "the three wells we discussed" names a set of that size. If no earlier answer
+            # selected three wells, the reference does not resolve: a differently sized
+            # answer is a different question, and widening to it would be wrong (Q16b).
+            sized = [rid for rid in seen
+                     if len(((self.session.get(SavedResult, rid).payload or {}).get('selected_well_ids') or []))
+                     == count and self.session.get(SavedResult, rid).user_id == user_id]
+            seen = sized
         rows = []
         for rid in seen[: max(limit, 5)]:
             result = self.session.get(SavedResult, rid)
@@ -275,6 +325,37 @@ class Orchestrator:
                          'created_at': result.created_at.isoformat() if result.created_at else None})
         return {'candidates': rows, 'selected_well_ids': rows[0]['selected_well_ids'] if rows else [],
                 'question': rows[0]['question'] if rows else None}
+
+    def _private_history(self, user_id, well_ids, limit, count):
+        """Most recent saved answers of this user that selected wells.
+
+        Ownership is enforced by the query, so a reference can never resolve into another
+        person's conversation (Q16b). The most recent answer is the natural referent of
+        "the wells we discussed"; an explicit count narrows it further.
+        """
+        rows = list(self.session.scalars(
+            select(SavedResult).where(SavedResult.user_id == user_id)
+            .order_by(SavedResult.created_at.desc()).limit(50)))
+        picked = []
+        sized = []
+        for result in rows:
+            selected = (result.payload or {}).get('selected_well_ids') or []
+            if not selected:
+                continue
+            if well_ids and not set(well_ids) <= set(selected):
+                continue
+            picked.append(result.id)
+            if count and len(selected) == count:
+                sized.append(result.id)
+        return (sized if count else picked)[:max(limit, 5)]
+
+    def _user_name(self, ident):
+        if not ident:
+            return None
+        row = self.session.scalar(
+            select(RecordVersion).join(ActiveRecord, ActiveRecord.version_id == RecordVersion.id)
+            .where(RecordVersion.kind == 'user', RecordVersion.record_id == ident))
+        return ((row.payload or {}).get('name') if row else None) or ident
 
     # -- composition -------------------------------------------------------
     def _compose(self, content, analysis_date, envelopes, draft_payload, recall_note, warnings, tool_trace):
@@ -306,7 +387,25 @@ class Orchestrator:
             calculations.append({'kind': 'recall', 'candidates': recall_note['candidates'],
                                  'selected_well_ids': recall_note.get('selected_well_ids') or []})
         primary = visuals[0] if visuals else {'kind': 'text', 'title': 'answer', 'data': []}
-        summary = self._summary(envelopes, draft_payload, recall_note, primary)
+        effect_sentences, effect_calculations, effect_conflicts = self._draft_effect(draft_payload, analysis_date)
+        calculations += effect_calculations
+        conflicts += effect_conflicts
+        pending = self._pending_claim(draft_payload)
+        if pending and primary.get('data'):
+            row = primary['data'][0]
+            if row.get('well_id') == pending['well_id']:
+                row.setdefault('shared_notes', []).append(
+                    {'text': pending['text'], 'author': pending['author'],
+                     'status': 'unconfirmed', 'evidence_ids': []})
+                positive = bool(re.search(r'running|back online|producing|operating', pending['text'] or '', re.I))
+                negative = bool(re.search(r'shut.?in|stopped|not producing', pending['text'] or '', re.I))
+                if (positive and not row.get('producing')) or (negative and row.get('producing')):
+                    conflicts.append({'target_id': pending['well_id'],
+                                      'message': 'Unconfirmed shared claim disagrees with inspected production. Please confirm.',
+                                      'claim': pending['text'], 'author': pending['author'],
+                                      'evidence_ids': row.get('evidence_ids') or []})
+        summary = self._summary(envelopes, draft_payload, recall_note, primary,
+                                conflicts=conflicts, effect_sentences=effect_sentences)
         envelope = AnswerEnvelope(
             result_id=new_id(), question=content, analysis_date=analysis_date,
             date_window=_window(envelopes, analysis_date),
@@ -317,21 +416,140 @@ class Orchestrator:
             warnings=all_warnings)
         return envelope.model_dump(mode='json')
 
-    def _summary(self, envelopes, draft_payload, recall_note, primary):
+    def _draft_effect(self, draft_payload, analysis_date):
+        """What the proposed change would do, computed from the rules — not guessed.
+
+        A correction is provisional, so the copilot may not answer as if it were applied.
+        It can still say, truthfully, what the records and the SOP imply if it is
+        confirmed: a corrected thermal reading flips the production state, and a corrected
+        spill volume can cross the reportable threshold.
+        """
+        if not draft_payload:
+            return [], [], []
+        preview = draft_payload.get('preview') or {}
+        inspection_id = preview.get('inspection_id')
+        field = draft_payload.get('field') or preview.get('field')
+        value = draft_payload.get('after_value')
+        if not inspection_id or value is None:
+            return [], [], []
+        fact = self.session.get(InspectionFact, inspection_id)
+        if fact is None or not isinstance(value, (int, float)):
+            return [], [], []
+        well = self.session.get(WellFact, fact.well_id)
+        knowledge = AssetKnowledge(self.session, analysis_date)
+        calculations, conflicts, sentences = [], [], []
+        if field in {'wellhead_temp_c', 'ambient_temp_c'}:
+            wellhead = float(value) if field == 'wellhead_temp_c' else float(fact.wellhead_temp_c)
+            ambient = float(value) if field == 'ambient_temp_c' else float(fact.ambient_temp_c)
+            threshold = float(knowledge._value('production_delta_c', well.well_type))
+            delta = round(wellhead - ambient, 1)
+            producing = delta >= threshold
+            calculations.append({'kind': 'proposed_reading', 'well_id': well.id,
+                                 'inspection_id': inspection_id, 'wellhead_temp_c': wellhead,
+                                 'ambient_temp_c': ambient, 'delta_c': delta,
+                                 'threshold_c': threshold, 'producing': producing})
+            sentences.append(
+                f'If confirmed, {well.id} would be {"producing" if producing else "not producing"} '
+                f'({delta:g} °C above ambient, against the {threshold:g} °C {well.well_type} limit).')
+            record = self.session.get(RecordVersion, fact.version_id)
+            remark = (record.payload or {}).get('notes') or ''
+            if producing and re.search(r'not moving|stopped|not running|shut.?in|\bdown\b', remark, re.I):
+                conflicts.append({'target_id': inspection_id,
+                                  'message': f"The inspector's remark {remark!r} disagrees with the corrected reading. Please confirm.",
+                                  'remark': remark, 'evidence_ids': []})
+                sentences.append(f"The same inspection notes {remark!r}, which disagrees with the correction. Please confirm.")
+        elif field == 'spill_est_volume_bbl':
+            volume = float(value)
+            reportable = volume >= float(knowledge._value('reportable_bbl'))
+            major = volume >= float(knowledge._value('major_bbl'))
+            calculations.append({'kind': 'proposed_spill', 'well_id': well.id,
+                                 'inspection_id': inspection_id, 'volume_bbl': volume,
+                                 'reportable': reportable})
+            if reportable:
+                limit = float(knowledge._value('major_report_hours') if major else knowledge._value('report_hours'))
+                due = utc(fact.inspected_at) + timedelta(hours=limit)
+                verification_due = utc(fact.inspected_at) + timedelta(days=int(knowledge._value('verification_days')))
+                filed = list(self.session.scalars(select(RegulatorFact).where(
+                    RegulatorFact.inspection_id == inspection_id,
+                    RegulatorFact.event_type == 'spill_report_filed')))
+                calculations.append({'kind': 'proposed_spill', 'well_id': well.id,
+                                     'inspection_id': inspection_id, 'protocol': 'SR-01',
+                                     'reportable': True, 'due_at': due.isoformat(),
+                                     'status': 'breach' if filed else 'possible breach',
+                                     'hours_to_report': filed[0].hours_to_report if filed else None,
+                                     'detail': 'Written notice recorded' if filed else 'No written notice recorded'})
+                calculations.append({'kind': 'proposed_spill', 'well_id': well.id,
+                                     'inspection_id': inspection_id, 'protocol': 'SR-03',
+                                     'due_at': verification_due.isoformat(), 'status': 'pending',
+                                     'detail': 'Agency verification due for a reportable spill'})
+                sentences.append(
+                    f'At {volume:g} bbl the spill is reportable: a written notice was due by '
+                    f'{due:%Y-%m-%d %H:%M} ({limit:g} h) and '
+                    f'{"one is recorded" if filed else "none is recorded, a possible SR-01 breach"}. '
+                    f'Agency verification is due by {verification_due:%Y-%m-%d}.')
+        return sentences, calculations, conflicts
+
+    def _pending_claim(self, draft_payload):
+        if not draft_payload or draft_payload.get('kind') != 'claim':
+            return None
+        well = draft_payload.get('well_id') or draft_payload.get('target_id')
+        text = draft_payload.get('value') or draft_payload.get('after_value')
+        if not well or not text:
+            return None
+        return {'well_id': well, 'text': text,
+                'author': self._user_name(draft_payload.get('author_id'))}
+
+    def _summary(self, envelopes, draft_payload, recall_note, primary, conflicts=None, effect_sentences=None):
+        conflicts = conflicts or []
         if draft_payload is not None:
             if draft_payload.get('status') == 'needs_clarification':
                 questions = '; '.join(draft_payload.get('clarification') or ['more detail'])
                 return f'I can record that once you confirm the details. Please provide: {questions}.'
-            return (f'Prepared a {draft_payload.get("kind")} change for {draft_payload.get("target_id") or draft_payload.get("well_id")} '
+            base = (f'Prepared a {draft_payload.get("kind")} change for {draft_payload.get("target_id") or draft_payload.get("well_id")} '
                     f'({_display(draft_payload.get("before_value"))} -> {_display(draft_payload.get("after_value"))}). '
                     f'Confirm to publish it; nothing has changed yet.')
+            if envelopes:
+                row = (envelopes[0].get('visual') or {}).get('data') or []
+                if row:
+                    first = row[0]
+                    base += (f" The latest inspection on {first.get('date')} shows {first.get('well_id')} "
+                             f"{'producing' if first.get('producing') else 'not producing'} "
+                             f"({first.get('delta_c'):g} °C above ambient).")
+            for sentence in effect_sentences or []:
+                base += ' ' + sentence
+            for conflict in conflicts:
+                message = conflict.get('message') or ''
+                if 'confirm' in message.lower() and message not in base:
+                    base += ' ' + message
+            return base
         if not envelopes:
+            if recall_note and recall_note.get('unresolved_reference'):
+                return ('I have no earlier conversation of yours that names those wells. '
+                        'Name the wells, an area, or a date range and I will answer from the records.')
             if recall_note and recall_note.get('candidates'):
                 return f'Recalled {len(recall_note["candidates"])} earlier result(s); nothing further was requested.'
             return 'I could not map that request to a supported asset query. Please rephrase with a well, area or operation.'
-        if primary.get('kind') == 'heatmap' or len(envelopes) > 1:
+        if primary.get('kind') == 'heatmap':
             return f'Combined {len(envelopes)} source-backed analyses; see the findings and evidence.'
-        return envelopes[0].get('summary') or 'See findings.'
+        base = envelopes[0].get('summary') or 'See findings.'
+        # Say why a well the user might expect is absent because its reading was corrected.
+        for calculation in envelopes[0].get('calculations') or []:
+            if calculation.get('kind') == 'corrected_exclusion':
+                base += (f" {calculation['well_id']} is not listed: its reading of "
+                         f"{calculation.get('original_value')} was corrected to {calculation.get('corrected_value')} "
+                         f"by {calculation.get('author')}, which makes it producing.")
+        # A team rule that replaces the manual must not look like the manual's threshold.
+        if any(row.get('authority') == 'team override' for row in primary.get('data') or []):
+            overrides = [row for row in primary.get('data') or [] if row.get('authority') == 'team override']
+            who = overrides[0].get('author') or 'the team'
+            types = sorted({row.get('well_type') for row in overrides if row.get('well_type')})
+            base += (f" This threshold follows {who}'s team rule for {'/'.join(types)}, "
+                     f'not the official manual.')
+        # A single spill whose notes disagree: answer the yes/no explicitly.
+        if primary.get('kind') == 'table' and len(primary.get('data') or []) == 1:
+            if any('do not replace detection' in (conflict.get('message') or '') for conflict in conflicts):
+                base = 'Yes. The detection stands; the attributed notes disagree and both are shown. ' + base
+        return base
 
     def _save_meta(self, user_id, result, envelope, envelopes, analysis_date):
         specs = [env.get('_spec') for env in envelopes if env.get('_spec')]
@@ -518,12 +736,15 @@ class FeedbackService:
             fingerprint = _fingerprint(['correction', target_id, field, fact.version_id, before])
             return before, after, fingerprint, preview
         if kind == 'rule':
-            rule = next((r for r in knowledge._rules() if r.rule_key == 'rca_threshold' and r.well_type == target_id), None)
+            # T350 has no rca_threshold of its own; it inherits T200's. The preview must read
+            # the effective rule, or a legitimate rule change for an inheriting type is
+            # rejected as "unknown well type".
+            rule = knowledge._rule('rca_threshold', target_id)
             if rule is None:
                 return None, None, '', {'error': f'unknown well type {target_id}'}
             before, after = rule.value, value
             preview.update({'well_type': target_id, 'equipment_kind': equipment_kind, 'field': field,
-                            'before': before, 'after': after})
+                            'before': before, 'after': after, 'inherited_from': rule.well_type})
             fingerprint = _fingerprint(['rule', target_id, field, equipment_kind, before])
             return before, after, fingerprint, preview
         preview.update({'well_id': target_id, 'field': 'text', 'before': None, 'after': value})
@@ -648,7 +869,7 @@ def _draft_summary(draft_payload):
 def _draft_dict(draft: FeedbackDraft) -> dict:
     return {'id': draft.id, 'kind': draft.kind, 'target_id': draft.target_id, 'well_id': draft.well_id,
             'field': draft.field, 'value': draft.value, 'unit': draft.unit,
-            'equipment_kind': draft.equipment_kind, 'reason': draft.reason,
+            'equipment_kind': draft.equipment_kind, 'reason': draft.reason, 'author_id': draft.author_id,
             'before_value': draft.before_value, 'after_value': draft.after_value,
             'status': draft.status, 'clarification': draft.clarification, 'preview': draft.preview,
             'fingerprint': draft.fingerprint, 'correction_id': draft.correction_id,

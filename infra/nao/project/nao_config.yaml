@@ -1,0 +1,24 @@
+project_name: asset-knowledge
+# A single conversation thread per chat keeps nao's per-chat state deterministic.
+threads: 1
+# No warehouse: the Copilot exposes typed Asset Knowledge MCP tools instead of
+# raw SQL. The restricted nao tool set cannot run execute_sql.
+databases: []
+repos: []
+semantic_layer: null
+notion: null
+obsidian: null
+llm:
+  annotation_model: openaiCompatible/ollama-cloud:gemma4:31b
+  providers:
+  - provider: openaiCompatible/ollama-cloud
+    api_key: "{{ env('OLLAMA_API_KEY') }}"
+    base_url: https://ollama.com/v1
+    models:
+    - id: gemma4:31b
+      default: true
+test:
+  models:
+  - id: gemma4:31b
+    default: true
+slack: null
