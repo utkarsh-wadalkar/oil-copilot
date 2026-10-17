@@ -60,37 +60,56 @@ def extracted_rules(path, content):
     """Only promote text matching a known grammatical rule; retain source section spans."""
     well_type = Path(path).stem if '/well-types/' in path else None
     for heading, start, end, body in sections(content):
-        clean = plain(body)
+        # Manuals wrap prose across lines and bold their numbers, so a line-oriented regex
+        # silently misses rules such as T500's "at least **25 °C above\nambient**".
+        clean = re.sub(r'\s+', ' ', plain(body).replace('**', '')).strip()
         rules = []
-        def number(key, pattern, flags=re.I):
-            match = re.search(pattern, clean, flags)
+        def number(key, pattern, flags=re.I, text=None):
+            match = re.search(pattern, text if text is not None else clean, flags)
             if match: rules.append((key, float(match.group(1))))
         if well_type:
             if 'Production temperature rule' in heading:
                 number('production_delta_c', r'at least (\d+(?:\.\d+)?) °C above ambient')
             if 'Maintenance escalation' in heading:
-                m = re.search(r'(Three|\d+) or more corrective.*?(\d+) months', clean, re.I)
-                if m: rules.extend([('rca_threshold', 3 if m.group(1).lower()=='three' else int(m.group(1))), ('rca_months',int(m.group(2)))])
-                if 'Same as T200' in clean: rules.append(('inherits','T200'))
+                m = re.search(r'(Two|Three|\d+) or more corrective.*?(\d+) months', clean, re.I)
+                if m:
+                    words = {'two': 2, 'three': 3}
+                    rules.extend([('rca_threshold', words.get(m.group(1).lower(), None) or int(m.group(1))),
+                                  ('rca_months', int(m.group(2)))])
+                if 'Same as T200' in clean: rules.append(('inherits', 'T200'))
+                if 'follow T200' in clean and not any(key == 'inherits' for key, _ in rules):
+                    rules.append(('inherits', 'T200'))
             if 'Scope' in heading:
-                m = re.search(r'Procedures not listed here follow the (\w+) manual',clean)
-                if m: rules.append(('inherits',m.group(1)))
+                m = re.search(r'Procedures not listed here follow the (\w+) manual', clean)
+                if m: rules.append(('inherits', m.group(1)))
         if path.endswith('spill-response-sop.md'):
             if 'Spill classes' in heading:
-                number('reportable_bbl',r'Reportable \| (\d+(?:\.\d+)?) bbl')
-                number('major_bbl',r'Major \| (\d+(?:\.\d+)?) bbl')
-                number('minor_bbl',r'Minor \| below (\d+(?:\.\d+)?) bbl')
-                number('moderate_notice_hours',r'(\d+) h \|')
+                number('reportable_bbl', r'Reportable \| (\d+(?:\.\d+)?) bbl')
+                number('major_bbl', r'Major \| (\d+(?:\.\d+)?) bbl')
+                number('minor_bbl', r'Minor \| below (\d+(?:\.\d+)?) bbl')
+                number('moderate_notice_hours', r'(\d+) h \|')
             if 'Protocols' in heading:
-                number('report_hours',r'within (\d+) hours of discovery')
-                number('major_report_hours',r'within (\d+) hours for a major spill')
-                number('containment_hours',r'contained within (\d+) hours')
-                number('verification_days',r'verified within (\d+) days')
+                number('report_hours', r'within (\d+) hours of discovery')
+                number('major_report_hours', r'within (\d+) hours for a major spill')
+                number('containment_hours', r'contained within (\d+) hours')
+                number('verification_days', r'verified within (\d+) days')
         if path.endswith('regulatory-compliance-sop.md'):
-            number('nov_response_days',r'answered within (\d+) days')
+            number('nov_response_days', r'answered within (\d+) days')
+        if path.endswith('operations-sop-rev2.md'):
+            if 'Gas odor response' in heading:
+                number('gas_response_hours', r'(\d+) hours for reports noted before')
+                number('gas_response_hours_2027', r'(\d+) hours for reports noted from 1 Jan 2027')
+            if 'Freeze protection' in heading:
+                number('heat_trace_days', r'within (\d+) days')
+                number('freeze_temp_c', r'at or below .?(\d+)')
+            if 'Repeat failure' in heading:
+                number('repeat_failure_days', r'within (\d+) days after the previous')
         if path.endswith('02-dataset-guide.md'):
-            number('downtime_days',r'counts as (\d+) days of downtime')
-        for key,value in rules: yield key,well_type,value,start,end
+            number('downtime_days', r'counts as (\d+) days of downtime')
+        for key, value in rules:
+            if value is None:
+                continue
+            yield key, well_type, value, start, end
 
 
 def prepare(root, session):
@@ -172,7 +191,13 @@ def prepare(root, session):
             if last.get('inspector_user_id'): ref('user',last['inspector_user_id'],where)
             if last.get('inspected_at'): timestamp(last['inspected_at'])
             if last.get('inspection_id') and known['inspection',last['inspection_id']]['asset_id']!=ident: raise ValueError('last inspection belongs to another well')
-            if known['area',p['area_id']]['team_id']!=p['team_id']: raise ValueError('well team does not match area')
+            # A well's own team_id/team_history takes priority over its area's team, so one area
+            # can hold wells run by two teams (test dataset README). Only require a known team.
+            if p.get('team_id') and ('team', p['team_id']) not in known: raise ValueError('unknown well team')
+            for change in p.get('team_history') or []:
+                ref('team', change.get('team_id'), where)
+            for change in p.get('type_history') or []:
+                if change.get('well_type') not in types: raise ValueError('unknown historical well type')
         if kind=='inspection':
             if type(p['spill_detected']) is not bool: raise ValueError('spill_detected must be boolean')
             for key in ('wellhead_temp_c','ambient_temp_c','inspected_at','inspector_user_id'): 
@@ -321,6 +346,16 @@ def ingest_dataset(session, root: Path, revision=None, no_embeddings=False):
                     maintenance_rows.append(dict(id=ident,version_id=r.id,well_id=p['asset_id'],started_at=timestamp(p['started_at']),completed_at=timestamp(p['completed_at']) if p.get('completed_at') else None,maintenance_type=p['maintenance_type'],equipment_kind=p['equipment_kind'],inspection_id=p.get('triggered_by_inspection_id'),cost_usd=p['cost_usd']['total'],containment_hours=hours,report_version_id=report_version))
                 elif kind=='regulator':
                     regulator_rows.append(dict(id=ident,version_id=r.id,well_id=p['asset_id'],event_date=datetime.combine(date.fromisoformat(p['date']),datetime.min.time()),inspection_id=p.get('related_inspection_id'),event_type=p['event_type'],protocol_id=p.get('protocol_id'),status=p['status'],hours_to_report=p.get('hours_to_report'),fine_usd=p.get('fine_usd',0)))
+                elif kind=='context' and p.get('note_type')=='data_correction' and p.get('field') in {'wellhead_temp_c','ambient_temp_c','spill_est_volume_bbl','spill_area_pct','spill_detected'} and p.get('inspection_id'):
+                    # A formal correction to one field of one inspection. It is source data, not a
+                    # chat claim: promote it once, idempotently, so every later answer uses the
+                    # corrected value and the original stays in its immutable record version.
+                    inspection=p['inspection_id']; field=p['field']; value=p['corrected_value']
+                    key=digest(json.dumps([ident,inspection,field,value],default=str))
+                    if session.get(ContextCorrectionIdentity,key) is None:
+                        correction=Correction(id=new_id(),target_kind='inspection',target_id=inspection,field=field,value=value,original_value=p.get('original_value'),scope_kind='inspection',scope_id=inspection,author_id=p['author_user_id'],reason=p.get('text') or 'data_correction note',status='accepted',source_id=r.source_id)
+                        session.add(correction); session.flush(); changed_sources.add(r.source_id)
+                        session.add(ContextCorrectionIdentity(key=key,note_id=ident,correction_id=correction.id))
                 elif kind=='context' and p.get('note_type')=='correction' and re.search(r'not (?:a (?:crude |oil )?spill|crude|oil)|no (?:crude|oil|spill)',p['text'],re.I):
                     inspection=context_target(p)
                     key=digest(json.dumps([ident,inspection,'spill_detected',False]))
